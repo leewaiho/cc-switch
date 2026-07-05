@@ -87,14 +87,9 @@ jobs:
         run: cargo test --lib --manifest-path src-tauri/Cargo.toml catalog_model_entry
 
       - name: Disable updater artifacts for unsigned build
-        shell: node
+        shell: bash
         run: |
-          const fs = require('fs');
-          const p = 'src-tauri/tauri.conf.json';
-          const j = JSON.parse(fs.readFileSync(p, 'utf8'));
-          j.bundle.createUpdaterArtifacts = false;
-          fs.writeFileSync(p, JSON.stringify(j, null, 2));
-          console.log('createUpdaterArtifacts =', j.bundle.createUpdaterArtifacts);
+          node -e 'const fs=require("fs");const p="src-tauri/tauri.conf.json";const j=JSON.parse(fs.readFileSync(p,"utf8"));j.bundle.createUpdaterArtifacts=false;fs.writeFileSync(p,JSON.stringify(j,null,2));console.log("createUpdaterArtifacts =",j.bundle.createUpdaterArtifacts);'
 
       - name: Build Tauri App (macOS x86_64)
         if: runner.os == 'macOS'
