@@ -127,7 +127,7 @@ impl CodexCatalogToolProfile {
 /// regardless of which template (cache/bundled/static) was used to build the entry.
 const DEFAULT_CODEX_REASONING_LEVELS: &[(&str, &str)] =
     &[("low", "低"), ("medium", "中"), ("high", "高")];
-const DEFAULT_CODEX_REASONING_LEVEL: &str = "high";
+const DEFAULT_CODEX_REASONING_LEVEL: &str = "medium";
 
 /// Reserved built-in provider IDs from OpenAI Codex's config/model-provider
 /// catalog. Keep in sync with Codex `RESERVED_MODEL_PROVIDER_IDS` and legacy
@@ -3042,7 +3042,7 @@ model_catalog_json = "cc-switch-model-catalog.json"
             .filter_map(|level| level["effort"].as_str())
             .collect();
         assert_eq!(efforts, vec!["low", "medium", "high"]);
-        assert_eq!(entry["default_reasoning_level"].as_str(), Some("high"));
+        assert_eq!(entry["default_reasoning_level"].as_str(), Some("medium"));
         assert!(
             entry["reasoning_levels"].is_null(),
             "reasoning_levels should be nulled to avoid stale template data"
@@ -3078,7 +3078,7 @@ model_catalog_json = "cc-switch-model-catalog.json"
                 .map(|a| a.len()),
             Some(3)
         );
-        assert_eq!(entry["default_reasoning_level"].as_str(), Some("high"));
+        assert_eq!(entry["default_reasoning_level"].as_str(), Some("medium"));
         assert!(entry["reasoning_levels"].is_null());
     }
 }
