@@ -1,6 +1,18 @@
 fn main() {
     tauri_build::build();
 
+    // Embed a build timestamp so the tray menu can show when this binary was
+    // built (useful for distinguishing local/custom builds from official ones).
+    // Falls back to "unknown" if the `date` command isn't available.
+    let build_time = std::process::Command::new("date")
+        .arg("+%Y-%m-%d %H:%M")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=BUILD_TIME={build_time}");
+
     // Windows: Embed Common Controls v6 manifest for test binaries
     //
     // When running `cargo test`, the generated test executables don't include
