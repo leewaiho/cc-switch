@@ -1,4 +1,4 @@
-name: Build macOS Artifact
+name: Build Artifacts
 
 on:
   push:
@@ -10,12 +10,26 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-macos-${{ github.ref_name }}
+  group: build-artifacts-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:
-  test-and-build-macos:
-    runs-on: macos-14
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: x86_64-apple-darwin
+            artifact_name: cc-switch-darwin-x86_64
+            artifact_path: src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: cc-switch-windows-x86_64
+            artifact_path: |
+              src-tauri/target/release/bundle/msi/*.msi
+              src-tauri/target/release/bundle/nsis/*.exe
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -28,11 +42,11 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
 
-      - name: Add macOS targets
-        run: |
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Add macOS target
+        if: runner.os == 'macOS'
+        run: rustup target add x86_64-apple-darwin
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -42,6 +56,7 @@ jobs:
 
       - name: Get pnpm store directory
         id: pnpm-store
+        shell: bash
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm cache
@@ -68,25 +83,32 @@ jobs:
         run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
 
       - name: Run reasoning-level unit tests
+        if: runner.os == 'macOS'
         run: cargo test --lib --manifest-path src-tauri/Cargo.toml catalog_model_entry
 
       - name: Disable updater artifacts for unsigned build
+        shell: node
         run: |
-          jq '.bundle.createUpdaterArtifacts = false' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
-          mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
-          cat src-tauri/tauri.conf.json | jq '.bundle.createUpdaterArtifacts'
+          const fs = require('fs');
+          const p = 'src-tauri/tauri.conf.json';
+          const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+          j.bundle.createUpdaterArtifacts = false;
+          fs.writeFileSync(p, JSON.stringify(j, null, 2));
+          console.log('createUpdaterArtifacts =', j.bundle.createUpdaterArtifacts);
 
       - name: Build Tauri App (macOS x86_64)
+        if: runner.os == 'macOS'
         env:
-          # Prevent Tauri from trying to notarize or use a real signing identity.
           APPLE_SIGNING_IDENTITY: '-'
-        run: pnpm tauri build --target x86_64-apple-darwin
+        run: pnpm tauri build --target x86_64-apple-darwin --bundles app
 
-      - name: Upload macOS artifact
+      - name: Build Tauri App (Windows x86_64)
+        if: runner.os == 'Windows'
+        run: pnpm tauri build
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cc-switch-macos-x86_64-${{ github.sha }}
-          path: |
-            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
-            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.dmg
+          name: ${{ matrix.artifact_name }}-${{ github.sha }}
+          path: ${{ matrix.artifact_path }}
           if-no-files-found: error
