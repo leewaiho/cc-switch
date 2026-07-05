@@ -12,6 +12,14 @@ use crate::error::AppError;
 use crate::store::AppState;
 
 const TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION: &str = "official_subscription";
+
+/// App version + build timestamp shown in the tray to identify local/custom builds.
+const TRAY_BUILD_INFO: &str = concat!(
+    "CC Switch v",
+    env!("CARGO_PKG_VERSION"),
+    " · 本地构建 ",
+    env!("BUILD_TIME")
+);
 const H_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_FIVE_HOUR];
 const W_TIER_NAMES: &[&str] = &[
     crate::services::subscription::TIER_WEEKLY_LIMIT,
@@ -669,9 +677,13 @@ pub fn create_tray_menu(
         None::<&str>,
     )
     .map_err(|e| AppError::Message(format!("创建打开官方网站菜单失败: {e}")))?;
+    let build_info_item =
+        MenuItem::with_id(app, "build_info", TRAY_BUILD_INFO, false, None::<&str>)
+            .map_err(|e| AppError::Message(format!("创建构建信息菜单失败: {e}")))?;
     menu_builder = menu_builder
         .item(&show_main_item)
         .item(&open_website_item)
+        .item(&build_info_item)
         .separator();
 
     // Pre-compute proxy running state (used to disable official providers in tray menu)
