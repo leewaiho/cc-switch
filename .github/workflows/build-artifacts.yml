@@ -22,7 +22,9 @@ jobs:
           - os: macos-14
             target: x86_64-apple-darwin
             artifact_name: cc-switch-darwin-x86_64
-            artifact_path: src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+            artifact_path: |
+              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: cc-switch-windows-x86_64
@@ -95,7 +97,7 @@ jobs:
         if: runner.os == 'macOS'
         env:
           APPLE_SIGNING_IDENTITY: '-'
-        run: pnpm tauri build --target x86_64-apple-darwin --bundles app
+        run: pnpm tauri build --target x86_64-apple-darwin --bundles app,dmg
 
       - name: Build Tauri App (Windows x86_64)
         if: runner.os == 'Windows'
