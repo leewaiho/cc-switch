@@ -555,8 +555,6 @@ fn codex_catalog_model_entry(
     entry_obj.insert("reasoning_levels".to_string(), Value::Null);
 
     entry
-
-    entry
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3743,12 +3741,8 @@ model_catalog_json = "cc-switch-model-catalog.json"
             input_modalities: None,
             base_instructions: None,
         };
-        let entry = codex_catalog_model_entry(
-            &template,
-            &spec,
-            0,
-            CodexCatalogToolProfile::ProxyChat,
-        );
+        let entry =
+            codex_catalog_model_entry(&template, &spec, 0, CodexCatalogToolProfile::ProxyChat);
 
         let levels = entry["supported_reasoning_levels"]
             .as_array()
@@ -3782,12 +3776,8 @@ model_catalog_json = "cc-switch-model-catalog.json"
             input_modalities: None,
             base_instructions: None,
         };
-        let entry = codex_catalog_model_entry(
-            &template,
-            &spec,
-            0,
-            CodexCatalogToolProfile::ProxyChat,
-        );
+        let entry =
+            codex_catalog_model_entry(&template, &spec, 0, CodexCatalogToolProfile::ProxyChat);
 
         assert_eq!(
             entry["supported_reasoning_levels"]
