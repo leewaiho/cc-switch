@@ -76,17 +76,17 @@ jobs:
           mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
           cat src-tauri/tauri.conf.json | jq '.bundle.createUpdaterArtifacts'
 
-      - name: Build Tauri App (macOS aarch64)
+      - name: Build Tauri App (macOS x86_64)
         env:
           # Prevent Tauri from trying to notarize or use a real signing identity.
           APPLE_SIGNING_IDENTITY: '-'
-        run: pnpm tauri build --target aarch64-apple-darwin
+        run: pnpm tauri build --target x86_64-apple-darwin
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cc-switch-macos-aarch64-${{ github.sha }}
+          name: cc-switch-macos-x86_64-${{ github.sha }}
           path: |
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.dmg
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.dmg
           if-no-files-found: error
