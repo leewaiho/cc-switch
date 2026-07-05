@@ -3,8 +3,11 @@ fn main() {
 
     // Embed a build timestamp so the tray menu can show when this binary was
     // built (useful for distinguishing local/custom builds from official ones).
-    // Falls back to "unknown" if the `date` command isn't available.
+    // Force Asia/Shanghai (CST) so the timestamp matches the user's local
+    // timezone regardless of the CI runner's default (GitHub Actions runners
+    // default to UTC). Falls back to "unknown" if `date` isn't available.
     let build_time = std::process::Command::new("date")
+        .env("TZ", "Asia/Shanghai")
         .arg("+%Y-%m-%d %H:%M")
         .output()
         .ok()
