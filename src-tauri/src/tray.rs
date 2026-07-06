@@ -13,11 +13,13 @@ use crate::store::AppState;
 
 const TEMPLATE_TYPE_OFFICIAL_SUBSCRIPTION: &str = "official_subscription";
 
-/// App version + build timestamp shown in the tray to identify local/custom builds.
+/// App version + build host + timestamp shown in the tray to identify local/custom builds.
 const TRAY_BUILD_INFO: &str = concat!(
     "CC Switch v",
     env!("CARGO_PKG_VERSION"),
-    " · 本地构建 ",
+    " · ",
+    env!("BUILD_HOST"),
+    " · ",
     env!("BUILD_TIME")
 );
 const H_TIER_NAMES: &[&str] = &[crate::services::subscription::TIER_FIVE_HOUR];
