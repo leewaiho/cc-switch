@@ -8,13 +8,29 @@ fn main() {
     // default to UTC). Falls back to "unknown" if `date` isn't available.
     let build_time = std::process::Command::new("date")
         .env("TZ", "Asia/Shanghai")
-        .arg("+%Y-%m-%d %H:%M")
+        .args(["--iso-8601=seconds"])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=BUILD_TIME={build_time}");
+
+    // Embed the build hostname (max 10 chars) so the tray menu can show where
+    // this binary was built. Falls back to "unknown" if hostname isn't available.
+    let build_host = std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    let build_host = if build_host.chars().count() > 10 {
+        build_host.chars().take(10).collect::<String>()
+    } else {
+        build_host
+    };
+    println!("cargo:rustc-env=BUILD_HOST={build_host}");
 
     // Windows: Embed Common Controls v6 manifest for test binaries
     //
