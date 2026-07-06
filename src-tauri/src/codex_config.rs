@@ -457,14 +457,35 @@ fn extract_codex_top_level_u64(config_text: &str, field: &str) -> Option<u64> {
         .filter(|value| *value > 0)
 }
 
+fn sanitize_codex_input_modalities<'a>(
+    items: impl IntoIterator<Item = &'a str>,
+) -> Option<Vec<String>> {
+    let mut modalities = Vec::new();
+    for item in items {
+        let normalized = item.trim().to_ascii_lowercase();
+        if (normalized == "text" || normalized == "image")
+            && !modalities.iter().any(|m| m == &normalized)
+        {
+            modalities.push(normalized);
+        }
+    }
+
+    (!modalities.is_empty()).then_some(modalities)
+}
+
 fn codex_catalog_input_modalities(
     model: &str,
     declared_modalities: Option<&[String]>,
 ) -> Vec<String> {
-    let modalities = match image_input_capability_from_modalities(model, declared_modalities) {
-        ImageInputCapability::Unsupported => &["text"][..],
-        ImageInputCapability::Supported | ImageInputCapability::Unknown => &["text", "image"][..],
-    };
+    let sanitized_modalities = declared_modalities
+        .and_then(|items| sanitize_codex_input_modalities(items.iter().map(String::as_str)));
+    let modalities =
+        match image_input_capability_from_modalities(model, sanitized_modalities.as_deref()) {
+            ImageInputCapability::Unsupported => &["text"][..],
+            ImageInputCapability::Supported | ImageInputCapability::Unknown => {
+                &["text", "image"][..]
+            }
+        };
     modalities.iter().map(|item| (*item).to_string()).collect()
 }
 
@@ -494,12 +515,13 @@ fn codex_catalog_model_entry(
     // Trust hidden preset metadata first, then the confirmed text-only registry;
     // every unknown model fails open so GPT/relay aliases are never declared
     // text-only merely because a template had a conservative default.
+    let input_modalities =
+        codex_catalog_input_modalities(&spec.model, spec.input_modalities.as_deref());
+    let supports_image = input_modalities.iter().any(|item| item == "image");
+    entry_obj.insert("input_modalities".to_string(), json!(input_modalities));
     entry_obj.insert(
-        "input_modalities".to_string(),
-        json!(codex_catalog_input_modalities(
-            &spec.model,
-            spec.input_modalities.as_deref(),
-        )),
+        "supports_image_detail_original".to_string(),
+        json!(supports_image),
     );
 
     if profile != CodexCatalogToolProfile::ProxyChat {
@@ -627,14 +649,9 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
             .get("inputModalities")
             .or_else(|| model_config.get("input_modalities"))
             .and_then(|value| value.as_array())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.as_str())
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .filter(|items| !items.is_empty());
+            .and_then(|items| {
+                sanitize_codex_input_modalities(items.iter().filter_map(|item| item.as_str()))
+            });
 
         let base_instructions = model_config
             .get("baseInstructions")
@@ -2986,6 +3003,11 @@ base_url = "https://production.api/v1"
             "per-row inputModalities override must apply"
         );
         assert_eq!(
+            entry.get("supports_image_detail_original"),
+            Some(&json!(true)),
+            "image input modalities must enable original image detail support"
+        );
+        assert_eq!(
             entry.get("context_window").and_then(|v| v.as_u64()),
             Some(1_000_000)
         );
@@ -3068,6 +3090,49 @@ base_url = "https://production.api/v1"
             );
             assert_eq!(modalities("custom-text-alias"), json!(["text"]));
         }
+    }
+
+    #[test]
+    fn catalog_sanitizes_input_modalities_and_disables_image_detail_for_text_only() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [
+                    {
+                        "model": "text-only",
+                        "inputModalities": [" Text ", "audio", "text"]
+                    },
+                    {
+                        "model": "empty-modalities",
+                        "input_modalities": ["audio", " "]
+                    }
+                ]
+            }
+        });
+
+        let catalog =
+            codex_model_catalog_from_settings(&settings, "", CodexCatalogToolProfile::ProxyChat)
+                .expect("catalog generation should not error")
+                .expect("non-empty modelCatalog must yield a catalog");
+
+        let text_entry = &catalog["models"][0];
+        assert_eq!(text_entry.get("input_modalities"), Some(&json!(["text"])));
+        assert_eq!(
+            text_entry.get("supports_image_detail_original"),
+            Some(&json!(false)),
+            "explicit text-only modalities must override image-capable template defaults"
+        );
+
+        let empty_entry = &catalog["models"][1];
+        assert_eq!(
+            empty_entry.get("input_modalities"),
+            Some(&json!(["text", "image"])),
+            "empty sanitized modalities should leave the ProxyChat template default untouched"
+        );
+        assert_eq!(
+            empty_entry.get("supports_image_detail_original"),
+            Some(&json!(true)),
+            "without valid explicit modalities the ProxyChat template default remains unchanged"
+        );
     }
 
     #[test]
