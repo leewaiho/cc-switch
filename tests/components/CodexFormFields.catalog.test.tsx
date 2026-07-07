@@ -1,9 +1,10 @@
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps, PropsWithChildren } from "react";
 import { useForm } from "react-hook-form";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexFormFields } from "@/components/providers/forms/CodexFormFields";
 import { Form } from "@/components/ui/form";
+import { fetchModelsForConfig } from "@/lib/api/model-fetch";
 
 vi.mock("@/lib/api/model-fetch", () => ({
   fetchModelsForConfig: vi.fn(),
@@ -56,6 +57,10 @@ const renderCodexForm = (
 };
 
 describe("CodexFormFields catalog input modalities", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("normalizes legacy catalog rows without inputModalities to explicit text", async () => {
     const handleCatalogModelsChange = vi.fn();
 
@@ -85,5 +90,36 @@ describe("CodexFormFields catalog input modalities", () => {
         ],
       }),
     ).not.toThrow();
+  });
+
+  it("auto-fills matching catalog row input modalities after fetching models", async () => {
+    vi.mocked(fetchModelsForConfig).mockResolvedValue([
+      {
+        id: "doubao-seed-2.0-pro",
+        ownedBy: "Volcengine",
+        inputModalities: ["text", "image"],
+      },
+    ]);
+    const handleCatalogModelsChange = vi.fn();
+
+    renderCodexForm({
+      codexApiKey: "test-key",
+      codexBaseUrl: "http://127.0.0.1:3011/v1",
+      catalogModels: [{ model: "doubao-seed-2.0-pro" }],
+      onCatalogModelsChange: handleCatalogModelsChange,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "providerForm.fetchModels" }),
+    );
+
+    await waitFor(() =>
+      expect(handleCatalogModelsChange).toHaveBeenLastCalledWith([
+        expect.objectContaining({
+          model: "doubao-seed-2.0-pro",
+          inputModalities: ["text", "image"],
+        }),
+      ]),
+    );
   });
 });
