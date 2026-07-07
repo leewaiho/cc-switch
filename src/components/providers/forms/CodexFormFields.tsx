@@ -159,7 +159,9 @@ function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
   };
 }
 
-const catalogInputModeValue = (row: CodexCatalogModel): "text" | "text-image" =>
+const catalogInputModeValue = (
+  row: CodexCatalogModel,
+): "text" | "text-image" =>
   normalizeCatalogInputModalities(row.inputModalities).includes("image")
     ? "text-image"
     : "text";
@@ -192,6 +194,38 @@ function catalogRowsMatchModels(
         JSON.stringify(incoming.inputModalities ?? [])
     );
   });
+}
+
+function applyFetchedModelModalitiesToCatalogRows(
+  rows: CodexCatalogRow[],
+  models: FetchedModel[],
+): CodexCatalogRow[] {
+  const modelsById = new Map(models.map((model) => [model.id, model]));
+  let changed = false;
+
+  const nextRows = rows.map((row) => {
+    const modelId = row.model.trim();
+    if (!modelId) return row;
+
+    const inputModalities = normalizeCatalogInputModalities(
+      modelsById.get(modelId)?.inputModalities,
+    );
+    if (inputModalities.length === 0) return row;
+
+    const currentInputModalities = normalizeCatalogInputModalities(
+      row.inputModalities,
+    );
+    if (
+      JSON.stringify(currentInputModalities) === JSON.stringify(inputModalities)
+    ) {
+      return row;
+    }
+
+    changed = true;
+    return { ...row, inputModalities };
+  });
+
+  return changed ? nextRows : rows;
 }
 
 export function CodexFormFields({
@@ -416,6 +450,9 @@ export function CodexFormFields({
       .then((models) => {
         if (seq !== fetchModelsSeqRef.current) return;
         setFetchedModels(models);
+        setCatalogRows((rows) =>
+          applyFetchedModelModalitiesToCatalogRows(rows, models),
+        );
         if (models.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
         } else {
