@@ -12,6 +12,18 @@ fn main() {
     let build_time = cst_build_time();
     println!("cargo:rustc-env=BUILD_TIME={build_time}");
 
+    // Embed the git commit id so tray build info can be traced back to the
+    // exact source revision used by local and CI builds.
+    let build_commit = std::process::Command::new("git")
+        .args(["rev-parse", "--short=8", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=BUILD_COMMIT={build_commit}");
+
     // Embed the build hostname (max 10 chars) so the tray menu can show where
     // this binary was built. Falls back to "unknown" if hostname isn't available.
     let build_host = std::process::Command::new("hostname")
