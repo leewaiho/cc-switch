@@ -524,9 +524,8 @@ pub fn create_tray_menu(
         None::<&str>,
     )
     .map_err(|e| AppError::Message(format!("创建打开官方网站菜单失败: {e}")))?;
-    let build_info_item =
-        MenuItem::with_id(app, "build_info", TRAY_BUILD_INFO, false, None::<&str>)
-            .map_err(|e| AppError::Message(format!("创建构建信息菜单失败: {e}")))?;
+    let build_info_item = MenuItem::with_id(app, "build_info", TRAY_BUILD_INFO, true, None::<&str>)
+        .map_err(|e| AppError::Message(format!("创建构建信息菜单失败: {e}")))?;
     menu_builder = menu_builder
         .item(&show_main_item)
         .item(&open_website_item)
@@ -744,6 +743,14 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
             if let Err(e) = app.opener().open_url("https://ccswitch.io", None::<String>) {
                 log::error!("打开官方网站失败: {e}");
             }
+        }
+        "build_info" => {
+            let build_info = TRAY_BUILD_INFO.to_string();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = crate::commands::copy_text_to_clipboard(build_info).await {
+                    log::error!("复制构建信息到剪贴板失败: {e}");
+                }
+            });
         }
         "lightweight_mode" => {
             if crate::lightweight::is_lightweight_mode() {
