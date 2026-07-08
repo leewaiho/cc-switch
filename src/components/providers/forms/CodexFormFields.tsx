@@ -42,6 +42,7 @@ import type {
   CodexApiFormat,
   CodexCatalogModel,
   CodexChatReasoning,
+  CodexDefaultReasoningEffort,
   PromptCacheRoutingMode,
   ProviderCategory,
 } from "@/types";
@@ -99,6 +100,10 @@ interface CodexFormFieldsProps {
   onMaxOutputTokensChange: (value: string) => void;
   codexChatReasoning?: CodexChatReasoning;
   onCodexChatReasoningChange?: (value: CodexChatReasoning) => void;
+  codexDefaultReasoningEffort?: CodexDefaultReasoningEffort;
+  onCodexDefaultReasoningEffortChange?: (
+    value: CodexDefaultReasoningEffort,
+  ) => void;
   promptCacheRouting: PromptCacheRoutingMode;
   onPromptCacheRoutingChange: (value: PromptCacheRoutingMode) => void;
 
@@ -264,6 +269,8 @@ export function CodexFormFields({
   onMaxOutputTokensChange,
   codexChatReasoning = {},
   onCodexChatReasoningChange,
+  codexDefaultReasoningEffort = "high",
+  onCodexDefaultReasoningEffortChange,
   promptCacheRouting,
   onPromptCacheRoutingChange,
   catalogModels = [],
@@ -864,6 +871,60 @@ export function CodexFormFields({
                 )}
               </div>
             )}
+
+            <div
+              className={cn(
+                "space-y-3",
+                (shouldShowSpeedTest || isChatFormat) &&
+                  "border-t border-border-default pt-3",
+              )}
+            >
+              <div className="space-y-1">
+                <FormLabel htmlFor="codex-default-reasoning-effort">
+                  {t("codexConfig.defaultReasoningEffort", {
+                    defaultValue: "默认推理级别",
+                  })}
+                </FormLabel>
+                <Select
+                  value={codexDefaultReasoningEffort}
+                  onValueChange={(value) =>
+                    onCodexDefaultReasoningEffortChange?.(
+                      value as CodexDefaultReasoningEffort,
+                    )
+                  }
+                >
+                  <SelectTrigger
+                    id="codex-default-reasoning-effort"
+                    className="w-full"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">
+                      {t("codexConfig.defaultReasoningEffortLow", {
+                        defaultValue: "Low",
+                      })}
+                    </SelectItem>
+                    <SelectItem value="medium">
+                      {t("codexConfig.defaultReasoningEffortMedium", {
+                        defaultValue: "Medium",
+                      })}
+                    </SelectItem>
+                    <SelectItem value="high">
+                      {t("codexConfig.defaultReasoningEffortHigh", {
+                        defaultValue: "High",
+                      })}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {t("codexConfig.defaultReasoningEffortHint", {
+                    defaultValue:
+                      "写入 Codex config.toml 的 model_reasoning_effort，控制 Codex 向模型发送请求时的默认推理强度；这不同于下方上游 Chat 参数转换能力。",
+                  })}
+                </p>
+              </div>
+            </div>
 
             {isChatFormat && canEditReasoning && (
               <div

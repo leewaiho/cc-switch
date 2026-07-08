@@ -1,14 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
   extractCodexBaseUrl,
+  extractCodexDefaultReasoningEffort,
   extractCodexExperimentalBearerToken,
   extractCodexModelName,
   setCodexBaseUrl as setCodexBaseUrlInConfig,
   setCodexModelName as setCodexModelNameInConfig,
+  setCodexDefaultReasoningEffort as setCodexDefaultReasoningEffortInConfig,
   updateCodexExperimentalBearerToken,
 } from "@/utils/providerConfigUtils";
 import { normalizeTomlText } from "@/utils/textNormalization";
-import type { CodexCatalogModel } from "@/types";
+import type { CodexCatalogModel, CodexDefaultReasoningEffort } from "@/types";
 
 interface UseCodexConfigStateProps {
   initialData?: {
@@ -39,6 +41,8 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
   const [codexApiKey, setCodexApiKey] = useState("");
   const [codexBaseUrl, setCodexBaseUrl] = useState("");
   const [codexModel, setCodexModel] = useState("");
+  const [codexDefaultReasoningEffort, setCodexDefaultReasoningEffortState] =
+    useState<CodexDefaultReasoningEffort>("high");
   const [codexCatalogModels, setCodexCatalogModels] = useState<
     CodexCatalogModel[]
   >([]);
@@ -63,6 +67,9 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
           ? (config as any).config
           : "";
       setCodexConfigState(configStr);
+      setCodexDefaultReasoningEffortState(
+        extractCodexDefaultReasoningEffort(configStr),
+      );
 
       const modelCatalog = (config as any).modelCatalog;
       const rawCatalogModels = Array.isArray(modelCatalog?.models)
@@ -135,6 +142,10 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     }
     const extracted = extractCodexBaseUrl(codexConfig) || "";
     setCodexBaseUrl((prev) => (prev === extracted ? prev : extracted));
+    const effort = extractCodexDefaultReasoningEffort(codexConfig);
+    setCodexDefaultReasoningEffortState((prev) =>
+      prev === effort ? prev : effort,
+    );
   }, [codexConfig]);
 
   // 与 TOML 配置保持默认模型同步（顶层 model 键）
@@ -224,6 +235,16 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     [codexAuth, setCodexAuth, setCodexConfig],
   );
 
+  const handleCodexDefaultReasoningEffortChange = useCallback(
+    (effort: CodexDefaultReasoningEffort) => {
+      setCodexDefaultReasoningEffortState(effort);
+      setCodexConfig((prev) =>
+        setCodexDefaultReasoningEffortInConfig(prev, effort),
+      );
+    },
+    [setCodexConfig],
+  );
+
   // 处理 Codex Base URL 变化
   const handleCodexBaseUrlChange = useCallback(
     (url: string) => {
@@ -267,6 +288,9 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
         if (extracted !== codexBaseUrl) {
           setCodexBaseUrl(extracted);
         }
+        setCodexDefaultReasoningEffortState(
+          extractCodexDefaultReasoningEffort(normalized),
+        );
       }
     },
     [setCodexConfig, codexBaseUrl],
@@ -282,6 +306,9 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       const authString = JSON.stringify(auth, null, 2);
       setCodexAuth(authString);
       setCodexConfig(config);
+      setCodexDefaultReasoningEffortState(
+        extractCodexDefaultReasoningEffort(config),
+      );
       setCodexCatalogModels(modelCatalogModels);
 
       const baseUrl = extractCodexBaseUrl(config);
@@ -298,6 +325,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     codexApiKey,
     codexBaseUrl,
     codexModel,
+    codexDefaultReasoningEffort,
     codexCatalogModels,
     codexAuthError,
     setCodexAuth,
@@ -306,6 +334,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexModelChange,
+    handleCodexDefaultReasoningEffortChange,
     handleCodexConfigChange,
     resetCodexConfig,
     getCodexAuthApiKey,

@@ -64,6 +64,7 @@ import {
   extractCodexWireApi,
   setCodexWireApi,
   extractCodexModelName,
+  setCodexDefaultReasoningEffort,
   setCodexModelName as setCodexModelNameInConfig,
 } from "@/utils/providerConfigUtils";
 import { isNonNegativeDecimalString } from "@/types/usage";
@@ -582,6 +583,7 @@ function ProviderFormFull({
     codexApiKey,
     codexBaseUrl,
     codexModel,
+    codexDefaultReasoningEffort,
     codexCatalogModels,
     codexAuthError,
     setCodexAuth,
@@ -590,6 +592,7 @@ function ProviderFormFull({
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexModelChange,
+    handleCodexDefaultReasoningEffortChange,
     handleCodexConfigChange: originalHandleCodexConfigChange,
     resetCodexConfig,
   } = useCodexConfigState({ initialData });
@@ -1383,6 +1386,13 @@ function ProviderFormFull({
           category !== "official" && (codexConfig ?? "").trim()
             ? setCodexWireApi(codexConfig ?? "", "responses")
             : (codexConfig ?? "");
+        if (category !== "official") {
+          normalizedCodexConfig = setCodexDefaultReasoningEffort(
+            normalizedCodexConfig,
+            codexDefaultReasoningEffort,
+          );
+        }
+
         // 模型映射与「路由接管」解耦：对所有非官方供应商，填了就持久化
         //（Chat 生成兼容路由、原生 Responses 生成 model-catalogs.json），
         // 留空归一化为 [] 即不写。后端只看 modelCatalog.models 是否非空。
@@ -2325,6 +2335,10 @@ function ProviderFormFull({
               onMaxOutputTokensChange={setLocalCodexMaxOutputTokens}
               codexChatReasoning={codexChatReasoning}
               onCodexChatReasoningChange={setCodexChatReasoning}
+              codexDefaultReasoningEffort={codexDefaultReasoningEffort}
+              onCodexDefaultReasoningEffortChange={
+                handleCodexDefaultReasoningEffortChange
+              }
               promptCacheRouting={promptCacheRouting}
               onPromptCacheRoutingChange={setPromptCacheRouting}
               catalogModels={codexCatalogModels}
