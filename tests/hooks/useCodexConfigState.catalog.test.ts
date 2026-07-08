@@ -1,4 +1,4 @@
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
 import { useCodexConfigState } from "@/components/providers/forms/hooks/useCodexConfigState";
 
@@ -75,5 +75,53 @@ describe("useCodexConfigState catalog load", () => {
         baseInstructions: "You are MiMo, developed by Xiaomi.",
       },
     ]);
+  });
+
+  it("loads Codex default reasoning effort from config.toml", () => {
+    const initialData = {
+      settingsConfig: {
+        auth: {},
+        config: [
+          'model_provider = "custom"',
+          'model = "glm-5.2"',
+          'model_reasoning_effort = "medium"',
+          "",
+          "[model_providers.custom]",
+          'base_url = "http://127.0.0.1:3011/v1"',
+          "",
+        ].join("\n"),
+      },
+    };
+
+    const { result } = renderHook(() => useCodexConfigState({ initialData }));
+
+    expect(result.current.codexDefaultReasoningEffort).toBe("medium");
+  });
+
+  it("writes Codex default reasoning effort back to config.toml", () => {
+    const initialData = {
+      settingsConfig: {
+        auth: {},
+        config: [
+          'model_provider = "custom"',
+          'model = "glm-5.2"',
+          "",
+          "[model_providers.custom]",
+          'base_url = "http://127.0.0.1:3011/v1"',
+          "",
+        ].join("\n"),
+      },
+    };
+
+    const { result } = renderHook(() => useCodexConfigState({ initialData }));
+
+    act(() => {
+      result.current.handleCodexDefaultReasoningEffortChange("low");
+    });
+
+    expect(result.current.codexDefaultReasoningEffort).toBe("low");
+    expect(result.current.codexConfig).toContain(
+      'model = "glm-5.2"\nmodel_reasoning_effort = "low"',
+    );
   });
 });

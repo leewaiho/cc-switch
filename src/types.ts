@@ -154,6 +154,8 @@ export type CodexChatEffortValueMode =
   // OpenRouter effort 枚举 xhigh|high|medium|low|minimal（无 max，max 钳到 xhigh）
   | "openrouter";
 
+export type CodexDefaultReasoningEffort = "low" | "medium" | "high";
+
 export type CodexChatReasoningOutputFormat =
   | "auto"
   | "reasoning_content"

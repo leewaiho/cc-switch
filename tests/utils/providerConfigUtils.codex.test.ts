@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   extractCodexBaseUrl,
+  extractCodexDefaultReasoningEffort,
   extractCodexExperimentalBearerToken,
   extractCodexModelName,
   extractCodexTopLevelInt,
   isCodexGoalModeEnabled,
   removeCodexTopLevelField,
   setCodexBaseUrl,
+  setCodexDefaultReasoningEffort,
   setCodexGoalMode,
   setCodexModelName,
   setCodexTopLevelInt,
@@ -70,9 +72,9 @@ describe("Codex TOML utils", () => {
       "",
       "[model_providers.custom]",
       'name = "custom"',
-      "base_url = \"https://su'us.codes/v1\"",
+      'base_url = "https://su\'us.codes/v1"',
       'wire_api = "responses"',
-      'requires_openai_auth = true',
+      "requires_openai_auth = true",
       "",
     ].join("\n");
 
@@ -93,7 +95,7 @@ describe("Codex TOML utils", () => {
       'base_url = "https://old.example/v1"',
       'base_url = "https://older.example/v1"',
       'wire_api = "responses"',
-      'requires_openai_auth = true',
+      "requires_openai_auth = true",
       "",
     ].join("\n");
 
@@ -196,6 +198,37 @@ describe("Codex TOML utils", () => {
 
     expect(extractCodexBaseUrl(input)).toBe("https://api.example.com/v1");
     expect(extractCodexModelName(input)).toBe("gpt-5");
+  });
+
+  it("reads and writes Codex default reasoning effort as a top-level field", () => {
+    const input = [
+      'model_provider = "custom"',
+      'model = "deepseek-v4-flash"',
+      "",
+      "[model_providers.custom]",
+      'name = "DeepSeek"',
+      'model_reasoning_effort = "low"',
+      "",
+    ].join("\n");
+
+    expect(extractCodexDefaultReasoningEffort(input)).toBe("high");
+
+    const output = setCodexDefaultReasoningEffort(input, "medium");
+
+    expect(extractCodexDefaultReasoningEffort(output)).toBe("medium");
+    expect(output).toContain(
+      'model = "deepseek-v4-flash"\nmodel_reasoning_effort = "medium"',
+    );
+    expect(output).toContain(
+      '[model_providers.custom]\nname = "DeepSeek"\nmodel_reasoning_effort = "low"',
+    );
+  });
+
+  it("defaults invalid or missing Codex default reasoning effort to high", () => {
+    expect(extractCodexDefaultReasoningEffort('model = "x"')).toBe("high");
+    expect(
+      extractCodexDefaultReasoningEffort('model_reasoning_effort = "max"'),
+    ).toBe("high");
   });
 
   it("reads, writes, and removes top-level integer metadata fields", () => {
