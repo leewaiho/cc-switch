@@ -151,6 +151,13 @@ const codexApiFormatFromWireApi = (
   }
 };
 
+export const resolveCodexDefaultModelForSave = (
+  selectedDefaultModel: string,
+  catalogModels: Pick<CodexCatalogModel, "model">[],
+): string => {
+  return selectedDefaultModel.trim() || catalogModels[0]?.model || "";
+};
+
 export const normalizeCodexCatalogModelsForSave = (
   models: CodexCatalogModel[],
 ): CodexCatalogModel[] => {
@@ -581,6 +588,7 @@ function ProviderFormFull({
     codexApiKey,
     codexBaseUrl,
     codexDefaultReasoningEffort,
+    codexDefaultModel,
     codexCatalogModels,
     codexAuthError,
     setCodexAuth,
@@ -589,6 +597,7 @@ function ProviderFormFull({
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexDefaultReasoningEffortChange,
+    handleCodexDefaultModelChange,
     handleCodexConfigChange: originalHandleCodexConfigChange,
     resetCodexConfig,
   } = useCodexConfigState({ initialData });
@@ -1297,11 +1306,17 @@ function ProviderFormFull({
           category !== "official"
             ? normalizeCodexCatalogModelsForSave(codexCatalogModels)
             : [];
-        // Sync first catalog row's model into config.toml so Codex uses it as default
-        if (normalizedCatalogModels.length > 0) {
+        // Default model is now an explicit Codex setting. Keep the old first-row
+        // fallback only when no default has been selected yet, so existing configs
+        // continue to work without forcing users to reorder catalog rows.
+        const defaultModelForSave = resolveCodexDefaultModelForSave(
+          codexDefaultModel,
+          normalizedCatalogModels,
+        );
+        if (defaultModelForSave) {
           normalizedCodexConfig = setCodexModelNameInConfig(
             normalizedCodexConfig,
-            normalizedCatalogModels[0].model,
+            defaultModelForSave,
           );
         }
         const configObj = {
@@ -2164,6 +2179,8 @@ function ProviderFormFull({
               onCodexDefaultReasoningEffortChange={
                 handleCodexDefaultReasoningEffortChange
               }
+              codexDefaultModel={codexDefaultModel}
+              onCodexDefaultModelChange={handleCodexDefaultModelChange}
               catalogModels={codexCatalogModels}
               onCatalogModelsChange={setCodexCatalogModels}
               speedTestEndpoints={speedTestEndpoints}

@@ -80,6 +80,8 @@ interface CodexFormFieldsProps {
   onCodexDefaultReasoningEffortChange?: (
     value: CodexDefaultReasoningEffort,
   ) => void;
+  codexDefaultModel?: string;
+  onCodexDefaultModelChange?: (model: string) => void;
 
   // Model Catalog
   catalogModels?: CodexCatalogModel[];
@@ -232,6 +234,8 @@ export function CodexFormFields({
   onCodexChatReasoningChange,
   codexDefaultReasoningEffort = "high",
   onCodexDefaultReasoningEffortChange,
+  codexDefaultModel = "",
+  onCodexDefaultModelChange,
   catalogModels = [],
   onCatalogModelsChange,
   speedTestEndpoints,
@@ -279,6 +283,13 @@ export function CodexFormFields({
 
   const [catalogRows, setCatalogRows] = useState<CodexCatalogRow[]>(() =>
     catalogModels.map((m) => createCatalogRow(m)),
+  );
+
+  const defaultModelOptions = Array.from(
+    new Set([
+      ...catalogRows.map((row) => row.model.trim()).filter(Boolean),
+      ...(codexDefaultModel.trim() ? [codexDefaultModel.trim()] : []),
+    ]),
   );
 
   // 记录上次发送给父组件的数据，避免重复触发
@@ -693,162 +704,206 @@ export function CodexFormFields({
                 </div>
 
                 {catalogRows.length > 0 && (
-                  <div className="space-y-2">
-                    {/* 列头：md+ 显示 */}
-                    <div className="hidden grid-cols-[1fr_1fr_140px_140px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
-                      <span>
-                        {t("codexConfig.catalogColumnDisplay", {
-                          defaultValue: "菜单显示名",
+                  <div className="space-y-4">
+                    <div className="space-y-1.5">
+                      <FormLabel htmlFor="codex-default-model">
+                        {t("codexConfig.defaultModel", {
+                          defaultValue: "默认模型",
                         })}
-                      </span>
-                      <span>
-                        {t("codexConfig.catalogColumnModel", {
-                          defaultValue: "实际请求模型",
+                      </FormLabel>
+                      <Select
+                        value={codexDefaultModel.trim() || undefined}
+                        onValueChange={(value) =>
+                          onCodexDefaultModelChange?.(value)
+                        }
+                        disabled={defaultModelOptions.length === 0}
+                      >
+                        <SelectTrigger
+                          id="codex-default-model"
+                          className="w-full"
+                        >
+                          <SelectValue
+                            placeholder={t(
+                              "codexConfig.defaultModelPlaceholder",
+                              {
+                                defaultValue: "选择默认模型",
+                              },
+                            )}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {defaultModelOptions.map((model) => (
+                            <SelectItem key={model} value={model}>
+                              {model}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {t("codexConfig.defaultModelHint", {
+                          defaultValue:
+                            "写入 Codex config.toml 顶层 model 字段；如果不选择，保存时会沿用第一条模型映射作为默认模型。",
                         })}
-                      </span>
-                      <span>
-                        {t("codexConfig.catalogColumnContext", {
-                          defaultValue: "上下文窗口",
-                        })}
-                      </span>
-                      <span>
-                        {t("codexConfig.catalogColumnInput", {
-                          defaultValue: "输入类型",
-                        })}
-                      </span>
-                      <span />
+                      </p>
                     </div>
 
-                    {catalogRows.map((row, index) => (
-                      <div
-                        key={row.rowId}
-                        className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_140px_140px_36px]"
-                      >
-                        <Input
-                          value={row.displayName ?? ""}
-                          onChange={(event) =>
-                            handleUpdateCatalogRow(index, {
-                              displayName: event.target.value,
-                            })
-                          }
-                          placeholder={t(
-                            "codexConfig.catalogDisplayNamePlaceholder",
-                            {
-                              defaultValue: "例如: DeepSeek V4 Flash",
-                            },
-                          )}
-                          aria-label={t("codexConfig.catalogColumnDisplay", {
+                    <div className="space-y-2">
+                      {/* 列头：md+ 显示 */}
+                      <div className="hidden grid-cols-[1fr_1fr_140px_140px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
+                        <span>
+                          {t("codexConfig.catalogColumnDisplay", {
                             defaultValue: "菜单显示名",
                           })}
-                        />
-                        <div className="flex gap-1">
+                        </span>
+                        <span>
+                          {t("codexConfig.catalogColumnModel", {
+                            defaultValue: "实际请求模型",
+                          })}
+                        </span>
+                        <span>
+                          {t("codexConfig.catalogColumnContext", {
+                            defaultValue: "上下文窗口",
+                          })}
+                        </span>
+                        <span>
+                          {t("codexConfig.catalogColumnInput", {
+                            defaultValue: "输入类型",
+                          })}
+                        </span>
+                        <span />
+                      </div>
+
+                      {catalogRows.map((row, index) => (
+                        <div
+                          key={row.rowId}
+                          className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_140px_140px_36px]"
+                        >
                           <Input
-                            value={row.model}
+                            value={row.displayName ?? ""}
                             onChange={(event) =>
                               handleUpdateCatalogRow(index, {
-                                model: event.target.value,
+                                displayName: event.target.value,
                               })
                             }
                             placeholder={t(
-                              "codexConfig.catalogModelPlaceholder",
+                              "codexConfig.catalogDisplayNamePlaceholder",
                               {
-                                defaultValue: "例如: deepseek-v4-flash",
+                                defaultValue: "例如: DeepSeek V4 Flash",
                               },
                             )}
-                            aria-label={t("codexConfig.catalogColumnModel", {
-                              defaultValue: "实际请求模型",
+                            aria-label={t("codexConfig.catalogColumnDisplay", {
+                              defaultValue: "菜单显示名",
                             })}
-                            className="flex-1"
                           />
-                          {fetchedModels.length > 0 && (
-                            <ModelDropdown
-                              models={fetchedModels}
-                              onSelect={(id, selected) => {
-                                const inputModalities =
-                                  normalizeCatalogInputModalities(
-                                    selected?.inputModalities,
-                                  );
+                          <div className="flex gap-1">
+                            <Input
+                              value={row.model}
+                              onChange={(event) =>
                                 handleUpdateCatalogRow(index, {
-                                  model: id,
-                                  displayName: row.displayName?.trim()
-                                    ? row.displayName
-                                    : id,
-                                  ...(inputModalities.length > 0
-                                    ? { inputModalities }
-                                    : {}),
-                                });
-                              }}
+                                  model: event.target.value,
+                                })
+                              }
+                              placeholder={t(
+                                "codexConfig.catalogModelPlaceholder",
+                                {
+                                  defaultValue: "例如: deepseek-v4-flash",
+                                },
+                              )}
+                              aria-label={t("codexConfig.catalogColumnModel", {
+                                defaultValue: "实际请求模型",
+                              })}
+                              className="flex-1"
                             />
-                          )}
-                        </div>
-                        <Input
-                          type="number"
-                          min={1}
-                          inputMode="numeric"
-                          value={row.contextWindow ?? ""}
-                          onChange={(event) =>
-                            handleUpdateCatalogRow(index, {
-                              contextWindow: event.target.value.replace(
-                                /[^\d]/g,
-                                "",
-                              ),
-                            })
-                          }
-                          placeholder={t(
-                            "codexConfig.contextWindowPlaceholder",
-                            {
-                              defaultValue: "例如: 128000",
-                            },
-                          )}
-                          aria-label={t("codexConfig.catalogColumnContext", {
-                            defaultValue: "上下文窗口",
-                          })}
-                        />
-                        <Select
-                          value={catalogInputModeValue(row)}
-                          onValueChange={(value) =>
-                            handleUpdateCatalogRow(index, {
-                              inputModalities:
-                                catalogInputModalitiesForMode(value),
-                            })
-                          }
-                        >
-                          <SelectTrigger
-                            aria-label={t("codexConfig.catalogColumnInput", {
-                              defaultValue: "输入类型",
+                            {fetchedModels.length > 0 && (
+                              <ModelDropdown
+                                models={fetchedModels}
+                                onSelect={(id, selected) => {
+                                  const inputModalities =
+                                    normalizeCatalogInputModalities(
+                                      selected?.inputModalities,
+                                    );
+                                  handleUpdateCatalogRow(index, {
+                                    model: id,
+                                    displayName: row.displayName?.trim()
+                                      ? row.displayName
+                                      : id,
+                                    ...(inputModalities.length > 0
+                                      ? { inputModalities }
+                                      : {}),
+                                  });
+                                }}
+                              />
+                            )}
+                          </div>
+                          <Input
+                            type="number"
+                            min={1}
+                            inputMode="numeric"
+                            value={row.contextWindow ?? ""}
+                            onChange={(event) =>
+                              handleUpdateCatalogRow(index, {
+                                contextWindow: event.target.value.replace(
+                                  /[^\d]/g,
+                                  "",
+                                ),
+                              })
+                            }
+                            placeholder={t(
+                              "codexConfig.contextWindowPlaceholder",
+                              {
+                                defaultValue: "例如: 128000",
+                              },
+                            )}
+                            aria-label={t("codexConfig.catalogColumnContext", {
+                              defaultValue: "上下文窗口",
                             })}
-                            title={t("codexConfig.catalogInputHelp", {
-                              defaultValue:
-                                "影响 Codex catalog 的 input_modalities，并决定图片请求是否按不支持图片降级。",
-                            })}
+                          />
+                          <Select
+                            value={catalogInputModeValue(row)}
+                            onValueChange={(value) =>
+                              handleUpdateCatalogRow(index, {
+                                inputModalities:
+                                  catalogInputModalitiesForMode(value),
+                              })
+                            }
                           >
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="text">
-                              {t("codexConfig.catalogInputText", {
-                                defaultValue: "文本",
+                            <SelectTrigger
+                              aria-label={t("codexConfig.catalogColumnInput", {
+                                defaultValue: "输入类型",
                               })}
-                            </SelectItem>
-                            <SelectItem value="text-image">
-                              {t("codexConfig.catalogInputTextImage", {
-                                defaultValue: "文本 + 图片",
+                              title={t("codexConfig.catalogInputHelp", {
+                                defaultValue:
+                                  "影响 Codex catalog 的 input_modalities，并决定图片请求是否按不支持图片降级。",
                               })}
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-9 w-9 text-muted-foreground hover:text-destructive"
-                          onClick={() => handleRemoveCatalogRow(index)}
-                          title={t("common.delete", { defaultValue: "删除" })}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    ))}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="text">
+                                {t("codexConfig.catalogInputText", {
+                                  defaultValue: "文本",
+                                })}
+                              </SelectItem>
+                              <SelectItem value="text-image">
+                                {t("codexConfig.catalogInputTextImage", {
+                                  defaultValue: "文本 + 图片",
+                                })}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-9 w-9 text-muted-foreground hover:text-destructive"
+                            onClick={() => handleRemoveCatalogRow(index)}
+                            title={t("common.delete", { defaultValue: "删除" })}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

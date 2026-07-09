@@ -3,8 +3,10 @@ import {
   extractCodexBaseUrl,
   extractCodexDefaultReasoningEffort,
   extractCodexExperimentalBearerToken,
+  extractCodexModelName,
   setCodexBaseUrl as setCodexBaseUrlInConfig,
   setCodexDefaultReasoningEffort as setCodexDefaultReasoningEffortInConfig,
+  setCodexModelName as setCodexModelNameInConfig,
   updateCodexExperimentalBearerToken,
 } from "@/utils/providerConfigUtils";
 import { normalizeTomlText } from "@/utils/textNormalization";
@@ -40,6 +42,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
   const [codexBaseUrl, setCodexBaseUrl] = useState("");
   const [codexDefaultReasoningEffort, setCodexDefaultReasoningEffortState] =
     useState<CodexDefaultReasoningEffort>("high");
+  const [codexDefaultModel, setCodexDefaultModel] = useState("");
   const [codexCatalogModels, setCodexCatalogModels] = useState<
     CodexCatalogModel[]
   >([]);
@@ -66,6 +69,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       setCodexDefaultReasoningEffortState(
         extractCodexDefaultReasoningEffort(configStr),
       );
+      setCodexDefaultModel(extractCodexModelName(configStr) ?? "");
 
       const modelCatalog = (config as any).modelCatalog;
       const rawCatalogModels = Array.isArray(modelCatalog?.models)
@@ -142,6 +146,8 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     setCodexDefaultReasoningEffortState((prev) =>
       prev === effort ? prev : effort,
     );
+    const model = extractCodexModelName(codexConfig) ?? "";
+    setCodexDefaultModel((prev) => (prev === model ? prev : model));
   }, [codexConfig]);
 
   // 获取 API Key（从 auth JSON）
@@ -232,6 +238,15 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     [setCodexConfig],
   );
 
+  const handleCodexDefaultModelChange = useCallback(
+    (model: string) => {
+      const trimmed = model.trim();
+      setCodexDefaultModel(trimmed);
+      setCodexConfig((prev) => setCodexModelNameInConfig(prev, trimmed));
+    },
+    [setCodexConfig],
+  );
+
   // 处理 Codex Base URL 变化
   const handleCodexBaseUrlChange = useCallback(
     (url: string) => {
@@ -262,6 +277,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
         setCodexDefaultReasoningEffortState(
           extractCodexDefaultReasoningEffort(normalized),
         );
+        setCodexDefaultModel(extractCodexModelName(normalized) ?? "");
       }
     },
     [setCodexConfig, codexBaseUrl],
@@ -280,6 +296,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
       setCodexDefaultReasoningEffortState(
         extractCodexDefaultReasoningEffort(config),
       );
+      setCodexDefaultModel(extractCodexModelName(config) ?? "");
       setCodexCatalogModels(modelCatalogModels);
 
       const baseUrl = extractCodexBaseUrl(config);
@@ -296,6 +313,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     codexApiKey,
     codexBaseUrl,
     codexDefaultReasoningEffort,
+    codexDefaultModel,
     codexCatalogModels,
     codexAuthError,
     setCodexAuth,
@@ -304,6 +322,7 @@ export function useCodexConfigState({ initialData }: UseCodexConfigStateProps) {
     handleCodexApiKeyChange,
     handleCodexBaseUrlChange,
     handleCodexDefaultReasoningEffortChange,
+    handleCodexDefaultModelChange,
     handleCodexConfigChange,
     resetCodexConfig,
     getCodexAuthApiKey,
