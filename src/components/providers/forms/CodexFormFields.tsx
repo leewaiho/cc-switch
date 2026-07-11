@@ -18,6 +18,8 @@ import {
 } from "@/components/ui/collapsible";
 import { toast } from "sonner";
 import {
+  ArrowDown,
+  ArrowUp,
   ChevronDown,
   ChevronRight,
   Download,
@@ -400,6 +402,22 @@ export function CodexFormFields({
     setCatalogRows((current) => current.filter((_, i) => i !== index));
   }, []);
 
+  const handleMoveCatalogRow = useCallback(
+    (index: number, direction: -1 | 1) => {
+      setCatalogRows((current) => {
+        const targetIndex = index + direction;
+        if (index < 0 || targetIndex < 0 || targetIndex >= current.length) {
+          return current;
+        }
+
+        const next = [...current];
+        [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+        return next;
+      });
+    },
+    [],
+  );
+
   const renderCatalogActionButtons = (onAdd: () => void, addLabel: string) => (
     <div className="flex gap-1">
       <Button
@@ -749,7 +767,7 @@ export function CodexFormFields({
 
                     <div className="space-y-2">
                       {/* 列头：md+ 显示 */}
-                      <div className="hidden grid-cols-[1fr_1fr_140px_140px_36px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
+                      <div className="hidden grid-cols-[1fr_1fr_140px_140px_116px] gap-2 px-1 text-xs font-medium text-muted-foreground md:grid">
                         <span>
                           {t("codexConfig.catalogColumnDisplay", {
                             defaultValue: "菜单显示名",
@@ -776,7 +794,7 @@ export function CodexFormFields({
                       {catalogRows.map((row, index) => (
                         <div
                           key={row.rowId}
-                          className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_140px_140px_36px]"
+                          className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_140px_140px_116px]"
                         >
                           <Input
                             value={row.displayName ?? ""}
@@ -891,16 +909,52 @@ export function CodexFormFields({
                               </SelectItem>
                             </SelectContent>
                           </Select>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-9 w-9 text-muted-foreground hover:text-destructive"
-                            onClick={() => handleRemoveCatalogRow(index)}
-                            title={t("common.delete", { defaultValue: "删除" })}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-9 text-muted-foreground"
+                              onClick={() => handleMoveCatalogRow(index, -1)}
+                              disabled={index === 0}
+                              title={t("codexConfig.catalogMoveUp", {
+                                defaultValue: "上移",
+                              })}
+                              aria-label={t("codexConfig.catalogMoveUp", {
+                                defaultValue: "上移",
+                              })}
+                            >
+                              <ArrowUp className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-9 text-muted-foreground"
+                              onClick={() => handleMoveCatalogRow(index, 1)}
+                              disabled={index === catalogRows.length - 1}
+                              title={t("codexConfig.catalogMoveDown", {
+                                defaultValue: "下移",
+                              })}
+                              aria-label={t("codexConfig.catalogMoveDown", {
+                                defaultValue: "下移",
+                              })}
+                            >
+                              <ArrowDown className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-9 text-muted-foreground hover:text-destructive"
+                              onClick={() => handleRemoveCatalogRow(index)}
+                              title={t("common.delete", {
+                                defaultValue: "删除",
+                              })}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
                       ))}
                     </div>
