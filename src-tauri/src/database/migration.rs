@@ -205,8 +205,8 @@ impl Database {
 
         for repo in &config.skills.repos {
             tx.execute(
-                "INSERT OR REPLACE INTO skill_repos (owner, name, branch, enabled) VALUES (?1, ?2, ?3, ?4)",
-                params![repo.owner, repo.name, repo.branch, repo.enabled],
+                "INSERT OR REPLACE INTO skill_repos (owner, name, branch, access_token, enabled) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![repo.owner, repo.name, repo.branch, repo.access_token, repo.enabled],
             ).map_err(|e| AppError::Database(format!("Migrate skill repo failed: {e}")))?;
         }
 

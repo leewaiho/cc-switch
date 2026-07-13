@@ -294,8 +294,14 @@ pub fn uninstall_skill_for_app(
 
 /// 获取技能仓库列表
 #[tauri::command]
-pub fn get_skill_repos(app_state: State<'_, AppState>) -> Result<Vec<SkillRepo>, String> {
-    app_state.db.get_skill_repos().map_err(|e| e.to_string())
+pub fn get_skill_repos(
+    app_state: State<'_, AppState>,
+) -> Result<Vec<crate::services::skill::SkillRepoView>, String> {
+    app_state
+        .db
+        .get_skill_repos()
+        .map(|repos| repos.iter().map(Into::into).collect())
+        .map_err(|e| e.to_string())
 }
 
 /// 添加技能仓库
