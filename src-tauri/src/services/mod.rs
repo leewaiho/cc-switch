@@ -39,7 +39,7 @@ pub use prompt::PromptService;
 pub use provider::{ProviderService, ProviderSortUpdate, SwitchResult};
 pub use proxy::ProxyService;
 #[allow(unused_imports)]
-pub use skill::{DiscoverableSkill, Skill, SkillRepo, SkillService};
+pub use skill::{DiscoverableSkill, Skill, SkillRepo, SkillRepoView, SkillService};
 pub use speedtest::{EndpointLatency, SpeedtestService};
 pub use usage_cache::UsageCache;
 #[allow(unused_imports)]

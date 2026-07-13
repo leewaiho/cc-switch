@@ -109,6 +109,7 @@ impl Database {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS skill_repos (
             owner TEXT NOT NULL, name TEXT NOT NULL, branch TEXT NOT NULL DEFAULT 'main',
+            access_token TEXT,
             enabled BOOLEAN NOT NULL DEFAULT 1, PRIMARY KEY (owner, name)
         )",
             [],
@@ -510,6 +511,11 @@ impl Database {
                         log::info!("迁移数据库从 v15 到 v16（重建 Codex 会话用量）");
                         Self::migrate_v15_to_v16(conn)?;
                         Self::set_user_version(conn, 16)?;
+                    }
+                    16 => {
+                        log::info!("迁移数据库从 v16 到 v17（私有 Skill 仓库访问令牌）");
+                        Self::migrate_v16_to_v17(conn)?;
+                        Self::set_user_version(conn, 17)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -2767,6 +2773,16 @@ impl Database {
     pub fn ensure_model_pricing_seeded(&self) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         Self::ensure_model_pricing_seeded_on_conn(&conn)
+    }
+
+    /// v16 -> v17 迁移：为私有 Skill 仓库保存可选 GitHub PAT。
+    fn migrate_v16_to_v17(conn: &Connection) -> Result<(), AppError> {
+        // 某些历史/最小化数据库 fixture 不包含 Skills 功能表；该迁移必须保持幂等，
+        // 让后续 create_tables() 在需要时创建完整表结构。
+        if Self::table_exists(conn, "skill_repos")? {
+            Self::add_column_if_missing(conn, "skill_repos", "access_token", "TEXT")?;
+        }
+        Ok(())
     }
 
     fn ensure_model_pricing_seeded_on_conn(conn: &Connection) -> Result<(), AppError> {

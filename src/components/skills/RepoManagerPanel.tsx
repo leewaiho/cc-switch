@@ -6,10 +6,14 @@ import { Label } from "@/components/ui/label";
 import { Trash2, ExternalLink, Plus } from "lucide-react";
 import { settingsApi } from "@/lib/api";
 import { FullScreenPanel } from "@/components/common/FullScreenPanel";
-import type { DiscoverableSkill, SkillRepo } from "@/lib/api/skills";
+import type {
+  DiscoverableSkill,
+  SkillRepo,
+  SkillRepoListItem,
+} from "@/lib/api/skills";
 
 interface RepoManagerPanelProps {
-  repos: SkillRepo[];
+  repos: SkillRepoListItem[];
   skills: DiscoverableSkill[];
   onAdd: (repo: SkillRepo) => Promise<void>;
   onRemove: (owner: string, name: string) => Promise<void>;
@@ -26,9 +30,10 @@ export function RepoManagerPanel({
   const { t } = useTranslation();
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("");
+  const [accessToken, setAccessToken] = useState("");
   const [error, setError] = useState("");
 
-  const getSkillCount = (repo: SkillRepo) =>
+  const getSkillCount = (repo: SkillRepoListItem) =>
     skills.filter(
       (skill) =>
         skill.repoOwner === repo.owner &&
@@ -65,11 +70,13 @@ export function RepoManagerPanel({
         owner: parsed.owner,
         name: parsed.name,
         branch: branch || "main",
+        accessToken: accessToken.trim() || undefined,
         enabled: true,
       });
 
       setRepoUrl("");
       setBranch("");
+      setAccessToken("");
     } catch (e) {
       setError(e instanceof Error ? e.message : t("skills.repo.addFailed"));
     }
@@ -119,6 +126,23 @@ export function RepoManagerPanel({
               className="mt-2"
             />
           </div>
+          <div>
+            <Label htmlFor="access-token" className="text-foreground">
+              {t("skills.repo.accessToken")}
+            </Label>
+            <Input
+              id="access-token"
+              type="password"
+              autoComplete="new-password"
+              placeholder={t("skills.repo.accessTokenPlaceholder")}
+              value={accessToken}
+              onChange={(e) => setAccessToken(e.target.value)}
+              className="mt-2"
+            />
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t("skills.repo.accessTokenHint")}
+            </p>
+          </div>
           {error && (
             <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
           )}
@@ -162,6 +186,11 @@ export function RepoManagerPanel({
                         count: getSkillCount(repo),
                       })}
                     </span>
+                    {repo.hasAccessToken && (
+                      <span className="ml-2 inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-[11px]">
+                        {t("skills.repo.private")}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="flex gap-2">
