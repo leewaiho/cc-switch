@@ -39,6 +39,7 @@ pub fn import_skill_from_deeplink(
         owner: owner.clone(),
         name: name.clone(),
         branch: request.branch.unwrap_or_else(|| "main".to_string()),
+        access_token: None,
         enabled: request.enabled.unwrap_or(true),
     };
 

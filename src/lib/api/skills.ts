@@ -123,12 +123,23 @@ export interface SkillsShSearchResult {
   query: string;
 }
 
-/** 仓库配置 */
+/** Payload used to add or update a GitHub skill repository. */
 export interface SkillRepo {
   owner: string;
   name: string;
   branch: string;
+  /** Optional GitHub PAT used only for private repository downloads. */
+  accessToken?: string;
   enabled: boolean;
+}
+
+/** Repository data safe to return to the renderer; never includes a PAT. */
+export interface SkillRepoListItem {
+  owner: string;
+  name: string;
+  branch: string;
+  enabled: boolean;
+  hasAccessToken: boolean;
 }
 
 // ========== API ==========
@@ -252,7 +263,7 @@ export const skillsApi = {
   // ========== 仓库管理 ==========
 
   /** 获取仓库列表 */
-  async getRepos(): Promise<SkillRepo[]> {
+  async getRepos(): Promise<SkillRepoListItem[]> {
     return await invoke("get_skill_repos");
   },
 

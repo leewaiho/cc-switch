@@ -5,10 +5,12 @@
 use super::*;
 use crate::app_config::MultiAppConfig;
 use crate::provider::{Provider, ProviderManager};
+use crate::services::skill::SkillRepo;
 use indexmap::IndexMap;
 use rusqlite::{params, Connection};
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Mutex;
 use tempfile::NamedTempFile;
 
 const LEGACY_SCHEMA_SQL: &str = r#"
@@ -259,6 +261,11 @@ fn schema_migration_aligns_column_defaults_and_types() {
     assert_eq!(branch.r#type, "TEXT");
     assert_eq!(normalize_default(&branch.default).as_deref(), Some("main"));
 
+    let skill_repo_access_token = get_column_info(&conn, "skill_repos", "access_token");
+    assert_eq!(skill_repo_access_token.r#type, "TEXT");
+    assert_eq!(skill_repo_access_token.notnull, 0);
+    assert_eq!(skill_repo_access_token.default, None);
+
     let skill_repo_enabled = get_column_info(&conn, "skill_repos", "enabled");
     assert_eq!(skill_repo_enabled.r#type, "BOOLEAN");
     assert_eq!(skill_repo_enabled.notnull, 1);
@@ -266,6 +273,42 @@ fn schema_migration_aligns_column_defaults_and_types() {
         normalize_default(&skill_repo_enabled.default).as_deref(),
         Some("1")
     );
+}
+
+#[test]
+fn skill_repo_access_token_round_trips_through_dao() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+    let db = Database {
+        conn: Mutex::new(conn),
+    };
+
+    db.save_skill_repo(&SkillRepo {
+        owner: "weihaostudio".to_string(),
+        name: "agent-skills".to_string(),
+        branch: "main".to_string(),
+        access_token: Some("github_pat_example".to_string()),
+        enabled: true,
+    })
+    .expect("save private skill repo");
+
+    let repos = db.get_skill_repos().expect("load skill repos");
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0].access_token.as_deref(), Some("github_pat_example"));
+
+    db.save_skill_repo(&SkillRepo {
+        owner: "weihaostudio".to_string(),
+        name: "agent-skills".to_string(),
+        branch: "release".to_string(),
+        access_token: None,
+        enabled: false,
+    })
+    .expect("update repo without replacing its PAT");
+
+    let repos = db.get_skill_repos().expect("reload skill repos");
+    assert_eq!(repos[0].branch, "release");
+    assert!(!repos[0].enabled);
+    assert_eq!(repos[0].access_token.as_deref(), Some("github_pat_example"));
 }
 
 #[test]
