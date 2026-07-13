@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+#[cfg(windows)]
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::timeout;
@@ -19,6 +21,12 @@ use crate::app_config::{AppType, InstalledSkill, SkillApps, UnmanagedSkill};
 use crate::config::get_app_config_dir;
 use crate::database::Database;
 use crate::error::format_skill_error;
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 // ========== 数据结构 ==========
 
@@ -1666,6 +1674,128 @@ impl SkillService {
         crate::settings::get_skill_sync_method()
     }
 
+    /// 将 `\\wsl$\\<distro>\\...` 或 `\\wsl.localhost\\<distro>\\...` 解析为发行版和 POSIX 路径。
+    ///
+    /// 不使用 `Path::components`，以便该解析器可以在非 Windows 单元测试中覆盖。
+    fn parse_wsl_unc_path(path: &Path) -> Option<(String, PathBuf)> {
+        let mut normalized = path.to_string_lossy().replace('\\', "/");
+        if let Some(rest) = normalized.strip_prefix("//?/UNC/") {
+            normalized = format!("//{rest}");
+        }
+        let trimmed = normalized.strip_prefix("//")?;
+        let mut parts = trimmed.split('/').filter(|part| !part.is_empty());
+        let server = parts.next()?;
+        if !server.eq_ignore_ascii_case("wsl$") && !server.eq_ignore_ascii_case("wsl.localhost") {
+            return None;
+        }
+        let distro = parts.next()?.to_string();
+        let posix_path = format!("/{}", parts.collect::<Vec<_>>().join("/"));
+        Some((distro, PathBuf::from(posix_path)))
+    }
+
+    /// 将 Windows 本地绝对路径映射为同机 WSL 可见的 `/mnt/<drive>/...` 路径。
+    fn windows_path_to_wsl_mount(path: &Path) -> Option<PathBuf> {
+        let normalized = path.to_string_lossy().replace('\\', "/");
+        let bytes = normalized.as_bytes();
+        if bytes.len() < 3
+            || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':'
+            || bytes[2] != b'/'
+        {
+            return None;
+        }
+
+        let drive = (bytes[0] as char).to_ascii_lowercase();
+        Some(PathBuf::from(format!("/mnt/{drive}/{}", &normalized[3..])))
+    }
+
+    #[cfg(windows)]
+    fn sync_to_wsl_app_dir(source: &Path, dest: &Path, method: SyncMethod) -> Result<bool> {
+        let Some((distro, dest_posix)) = Self::parse_wsl_unc_path(dest) else {
+            return Ok(false);
+        };
+        let source_posix = Self::windows_path_to_wsl_mount(source).ok_or_else(|| {
+            anyhow!(
+                "WSL Skill 同步仅支持 Windows 本地 SSOT 目录: {}",
+                source.display()
+            )
+        })?;
+
+        let copy_or_link = match method {
+            SyncMethod::Symlink => "ln -s \"$src\" \"$tmp\"",
+            SyncMethod::Auto | SyncMethod::Copy => "cp -a \"$src\" \"$tmp\"",
+        };
+        let script = format!(
+            "set -eu; src=\"$1\"; dest=\"$2\"; tmp=\"${{dest}}.cc-switch-tmp-$$\"; \\
+             rm -rf \"$tmp\"; mkdir -p \"$(dirname \"$dest\")\"; {copy_or_link}; \\
+             test -f \"$tmp/SKILL.md\"; rm -rf \"$dest\"; mv \"$tmp\" \"$dest\""
+        );
+
+        let mut command = Command::new("wsl.exe");
+        command
+            .args(["-d", &distro, "--exec", "sh", "-c", &script, "sh"])
+            .arg(&source_posix)
+            .arg(&dest_posix)
+            .creation_flags(CREATE_NO_WINDOW);
+        let output = command.output().with_context(|| {
+            format!(
+                "无法启动 wsl.exe 同步 Skill 到 [WSL:{distro}] {}",
+                dest_posix.display()
+            )
+        })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if stderr.is_empty() { stdout } else { stderr };
+            return Err(anyhow!(
+                "同步 Skill 到 [WSL:{distro}] 失败 (exit {:?}): {}",
+                output.status.code(),
+                detail
+            ));
+        }
+
+        Ok(true)
+    }
+
+    #[cfg(not(windows))]
+    fn sync_to_wsl_app_dir(_source: &Path, _dest: &Path, _method: SyncMethod) -> Result<bool> {
+        Ok(false)
+    }
+
+    #[cfg(windows)]
+    fn remove_from_wsl_app_dir(dest: &Path) -> Result<bool> {
+        let Some((distro, dest_posix)) = Self::parse_wsl_unc_path(dest) else {
+            return Ok(false);
+        };
+        let output = Command::new("wsl.exe")
+            .args(["-d", &distro, "--exec", "rm", "-rf"])
+            .arg(&dest_posix)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .with_context(|| {
+                format!(
+                    "无法启动 wsl.exe 从 [WSL:{distro}] 删除 Skill: {}",
+                    dest_posix.display()
+                )
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if stderr.is_empty() { stdout } else { stderr };
+            return Err(anyhow!(
+                "从 [WSL:{distro}] 删除 Skill 失败 (exit {:?}): {}",
+                output.status.code(),
+                detail
+            ));
+        }
+        Ok(true)
+    }
+
+    #[cfg(not(windows))]
+    fn remove_from_wsl_app_dir(_dest: &Path) -> Result<bool> {
+        Ok(false)
+    }
+
     /// 同步 Skill 到应用目录（使用 symlink 或 copy）
     ///
     /// 根据配置和平台选择最佳同步方式：
@@ -1688,6 +1818,10 @@ impl SkillService {
         let dest = app_dir.join(directory);
 
         let sync_method = Self::get_sync_method();
+        if Self::sync_to_wsl_app_dir(&source, &dest, sync_method)? {
+            log::debug!("Skill {directory} 已通过 WSL 同步到 {app:?}");
+            return Ok(());
+        }
 
         match sync_method {
             SyncMethod::Auto => {
@@ -1851,6 +1985,10 @@ impl SkillService {
 
         let app_dir = Self::get_app_skills_dir(app)?;
         let skill_path = app_dir.join(directory);
+
+        if Self::remove_from_wsl_app_dir(&skill_path)? {
+            return Ok(());
+        }
 
         if skill_path.exists() || Self::is_symlink(&skill_path) {
             Self::remove_path(&skill_path)?;
@@ -3278,6 +3416,33 @@ mod tests {
             .expect("install name should fall back to the matching discovered skill directory");
 
         assert_eq!(resolved, nested);
+    }
+
+    #[test]
+    fn parse_wsl_unc_path_derives_distro_and_posix_target() {
+        let path =
+            Path::new(r"\\wsl.localhost\Ubuntu-22.04\home\weihao\.claude\skills\git-workflow");
+
+        let (distro, target) = SkillService::parse_wsl_unc_path(path)
+            .expect("WSL UNC skill destination should be recognized");
+
+        assert_eq!(distro, "Ubuntu-22.04");
+        assert_eq!(
+            target,
+            PathBuf::from("/home/weihao/.claude/skills/git-workflow")
+        );
+    }
+
+    #[test]
+    fn windows_path_to_wsl_mount_maps_ssot_source() {
+        let source = Path::new(r"C:\Users\weihao\.cc-switch\skills\git-workflow");
+
+        assert_eq!(
+            SkillService::windows_path_to_wsl_mount(source),
+            Some(PathBuf::from(
+                "/mnt/c/Users/weihao/.cc-switch/skills/git-workflow"
+            ))
+        );
     }
 
     #[test]
