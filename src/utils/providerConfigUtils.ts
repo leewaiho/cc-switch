@@ -2,6 +2,7 @@
 
 import type { TemplateValueConfig } from "../config/claudeProviderPresets";
 import type { CodexApiFormat } from "@/types";
+import type { CodexDefaultReasoningEffort } from "@/types";
 import { deepClone } from "@/utils/deepClone";
 import { normalizeTomlText } from "@/utils/textNormalization";
 import { parse as parseToml } from "smol-toml";
@@ -1443,6 +1444,80 @@ export const setCodexModelName = (
   const modelProviderIndex = getTopLevelModelProviderLineIndex(lines);
   if (modelProviderIndex !== -1) {
     lines.splice(modelProviderIndex + 1, 0, replacementLine);
+    return finalizeTomlText(lines);
+  }
+
+  if (lines.length === 0) {
+    return `${replacementLine}\n`;
+  }
+
+  lines.splice(topLevelEndIndex, 0, replacementLine);
+  return finalizeTomlText(lines);
+};
+
+// ========== Codex default reasoning effort utils ==========
+
+const CODEX_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
+
+const isCodexDefaultReasoningEffort = (
+  value: string,
+): value is CodexDefaultReasoningEffort => CODEX_REASONING_EFFORTS.has(value);
+
+export const normalizeCodexDefaultReasoningEffort = (
+  value: unknown,
+): CodexDefaultReasoningEffort => {
+  if (typeof value !== "string") return "high";
+  const normalized = value.trim().toLowerCase();
+  return isCodexDefaultReasoningEffort(normalized) ? normalized : "high";
+};
+
+const TOML_MODEL_REASONING_EFFORT_PATTERN =
+  /^\s*model_reasoning_effort\s*=\s*(["'])([^"'\r\n]+)\1\s*(?:#.*)?$/;
+
+export const extractCodexDefaultReasoningEffort = (
+  configText: string | undefined | null,
+): CodexDefaultReasoningEffort => {
+  try {
+    const raw = typeof configText === "string" ? configText : "";
+    const text = normalizeTomlText(raw);
+    if (!text) return "high";
+    const lines = text.split("\n");
+    const topLevelMatch = findTomlAssignmentInRange(
+      lines,
+      TOML_MODEL_REASONING_EFFORT_PATTERN,
+      0,
+      getTopLevelEndIndex(lines),
+    );
+    return normalizeCodexDefaultReasoningEffort(topLevelMatch?.value);
+  } catch {
+    return "high";
+  }
+};
+
+export const setCodexDefaultReasoningEffort = (
+  configText: string,
+  effort: CodexDefaultReasoningEffort,
+): string => {
+  const normalizedEffort = normalizeCodexDefaultReasoningEffort(effort);
+  const normalizedText = normalizeTomlText(configText);
+  const lines = normalizedText ? normalizedText.split("\n") : [];
+  const topLevelEndIndex = getTopLevelEndIndex(lines);
+  const topLevelMatch = findTomlAssignmentInRange(
+    lines,
+    TOML_MODEL_REASONING_EFFORT_PATTERN,
+    0,
+    topLevelEndIndex,
+  );
+  const replacementLine = `model_reasoning_effort = "${normalizedEffort}"`;
+
+  if (topLevelMatch) {
+    lines[topLevelMatch.index] = replacementLine;
+    return finalizeTomlText(lines);
+  }
+
+  const modelLineIndex = findTopLevelModelLineIndex(lines, topLevelEndIndex);
+  if (modelLineIndex !== -1) {
+    lines.splice(modelLineIndex + 1, 0, replacementLine);
     return finalizeTomlText(lines);
   }
 

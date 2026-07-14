@@ -107,6 +107,7 @@ impl Database {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS skill_repos (
             owner TEXT NOT NULL, name TEXT NOT NULL, branch TEXT NOT NULL DEFAULT 'main',
+            access_token TEXT,
             enabled BOOLEAN NOT NULL DEFAULT 1, PRIMARY KEY (owner, name)
         )",
             [],
@@ -484,6 +485,13 @@ impl Database {
                         log::info!("迁移数据库从 v12 到 v13（记录输入 token 缓存语义）");
                         Self::migrate_v12_to_v13(conn)?;
                         Self::set_user_version(conn, 13)?;
+                    }
+                    13 => {
+                        log::info!(
+                            "迁移数据库从 v13 到 v14（兼容项目 Profiles 与私有 Skill 仓库）"
+                        );
+                        Self::migrate_v13_to_v14(conn)?;
+                        Self::set_user_version(conn, 14)?;
                     }
                     _ => {
                         return Err(AppError::Database(format!(
@@ -1327,6 +1335,31 @@ impl Database {
             [],
         )
         .map_err(|e| AppError::Database(format!("v11 -> v12 创建 profiles 表失败: {e}")))?;
+        Ok(())
+    }
+
+    /// v13 -> v14：协调 fork v12 与上游 v12 的不同含义。
+    ///
+    /// fork v12 只增加了 `skill_repos.access_token`，而上游 v12 创建了
+    /// `profiles`。升级路径可能来自任意一侧，因此这里幂等确保两种结构
+    /// 都存在；上游 v13 的缓存语义迁移仍由 v12 -> v13 负责。
+    fn migrate_v13_to_v14(conn: &Connection) -> Result<(), AppError> {
+        Self::migrate_v11_to_v12(conn)?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS skill_repos (
+                owner TEXT NOT NULL,
+                name TEXT NOT NULL,
+                branch TEXT NOT NULL DEFAULT 'main',
+                access_token TEXT,
+                enabled BOOLEAN NOT NULL DEFAULT 1,
+                PRIMARY KEY (owner, name)
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Database(format!("v13 -> v14 创建 skill_repos 表失败: {e}")))?;
+
+        Self::add_column_if_missing(conn, "skill_repos", "access_token", "TEXT")?;
         Ok(())
     }
 
@@ -2752,7 +2785,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn migrate_v12_to_v13_adds_input_token_semantics_columns() -> Result<(), AppError> {
+    fn fork_v12_upgrades_through_v14_without_losing_private_skill_support() -> Result<(), AppError>
+    {
         let conn = Connection::open_in_memory()?;
         conn.execute(
             "CREATE TABLE proxy_request_logs (request_id TEXT PRIMARY KEY)",
@@ -2762,11 +2796,26 @@ mod tests {
             "CREATE TABLE usage_daily_rollups (date TEXT PRIMARY KEY)",
             [],
         )?;
+        conn.execute(
+            "CREATE TABLE skill_repos (
+                owner TEXT NOT NULL,
+                name TEXT NOT NULL,
+                branch TEXT NOT NULL DEFAULT 'main',
+                access_token TEXT,
+                enabled BOOLEAN NOT NULL DEFAULT 1,
+                PRIMARY KEY (owner, name)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO skill_repos (owner, name, access_token) VALUES ('private', 'skills', 'secret')",
+            [],
+        )?;
         Database::set_user_version(&conn, 12)?;
 
         Database::apply_schema_migrations_on_conn(&conn)?;
 
-        assert_eq!(Database::get_user_version(&conn)?, 13);
+        assert_eq!(Database::get_user_version(&conn)?, 14);
         assert!(Database::has_column(
             &conn,
             "proxy_request_logs",
@@ -2784,7 +2833,49 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(log_default, 1);
+        assert!(Database::table_exists(&conn, "profiles")?);
+        assert!(Database::has_column(&conn, "skill_repos", "access_token")?);
+        let token: String = conn.query_row(
+            "SELECT access_token FROM skill_repos WHERE owner = 'private' AND name = 'skills'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(token, "secret");
 
+        Ok(())
+    }
+
+    #[test]
+    fn upstream_v13_upgrades_to_v14_with_private_skill_column() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute(
+            "CREATE TABLE profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE skill_repos (
+                owner TEXT NOT NULL,
+                name TEXT NOT NULL,
+                branch TEXT NOT NULL DEFAULT 'main',
+                enabled BOOLEAN NOT NULL DEFAULT 1,
+                PRIMARY KEY (owner, name)
+            )",
+            [],
+        )?;
+        Database::set_user_version(&conn, 13)?;
+
+        Database::apply_schema_migrations_on_conn(&conn)?;
+
+        assert_eq!(Database::get_user_version(&conn)?, 14);
+        assert!(Database::table_exists(&conn, "profiles")?);
+        assert!(Database::has_column(&conn, "skill_repos", "access_token")?);
         Ok(())
     }
 }

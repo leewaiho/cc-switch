@@ -7,6 +7,7 @@
 use reqwest::header::{HeaderValue, USER_AGENT};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::time::Duration;
 
 /// 获取到的模型信息
@@ -15,6 +16,8 @@ use std::time::Duration;
 pub struct FetchedModel {
     pub id: String,
     pub owned_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<Vec<String>>,
 }
 
 /// OpenAI 兼容的 /v1/models 响应格式
@@ -27,6 +30,20 @@ struct ModelsResponse {
 struct ModelEntry {
     id: String,
     owned_by: Option<String>,
+    input: Option<Value>,
+    input_modalities: Option<Value>,
+    #[serde(rename = "inputModalities")]
+    input_modalities_camel: Option<Value>,
+    modalities: Option<ModelModalities>,
+    vision: Option<bool>,
+    supports_image: Option<bool>,
+    #[serde(rename = "supportsImage")]
+    supports_image_camel: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelModalities {
+    input: Option<Value>,
 }
 
 const FETCH_TIMEOUT_SECS: u64 = 15;
@@ -96,10 +113,7 @@ pub async fn fetch_models(
                 .data
                 .unwrap_or_default()
                 .into_iter()
-                .map(|m| FetchedModel {
-                    id: m.id,
-                    owned_by: m.owned_by,
-                })
+                .map(fetched_model_from_entry)
                 .collect();
 
             models.sort_by(|a, b| a.id.cmp(&b.id));
@@ -229,6 +243,58 @@ fn ends_with_version_segment(url: &str) -> bool {
     let last = url.rsplit('/').next().unwrap_or("");
     last.strip_prefix('v')
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn fetched_model_from_entry(entry: ModelEntry) -> FetchedModel {
+    let input_modalities = parse_model_input_modalities(&entry);
+    FetchedModel {
+        id: entry.id,
+        owned_by: entry.owned_by,
+        input_modalities,
+    }
+}
+
+fn parse_model_input_modalities(entry: &ModelEntry) -> Option<Vec<String>> {
+    for value in [
+        entry.input.as_ref(),
+        entry.input_modalities.as_ref(),
+        entry.input_modalities_camel.as_ref(),
+        entry.modalities.as_ref().and_then(|m| m.input.as_ref()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(modalities) = sanitize_input_modalities(value) {
+            return Some(modalities);
+        }
+    }
+
+    let supports_image = entry
+        .vision
+        .or(entry.supports_image)
+        .or(entry.supports_image_camel)?;
+    Some(if supports_image {
+        vec!["text".to_string(), "image".to_string()]
+    } else {
+        vec!["text".to_string()]
+    })
+}
+
+fn sanitize_input_modalities(value: &Value) -> Option<Vec<String>> {
+    let mut modalities = Vec::new();
+    for item in value.as_array()? {
+        let Some(item) = item.as_str().map(str::trim).filter(|item| !item.is_empty()) else {
+            continue;
+        };
+        let normalized = item.to_ascii_lowercase();
+        if (normalized == "text" || normalized == "image")
+            && !modalities.iter().any(|m| m == &normalized)
+        {
+            modalities.push(normalized);
+        }
+    }
+
+    (!modalities.is_empty()).then_some(modalities)
 }
 
 #[cfg(test)]
@@ -457,6 +523,85 @@ mod tests {
         assert_eq!(data[0].id, "gpt-4");
         assert_eq!(data[0].owned_by.as_deref(), Some("openai"));
         assert_eq!(data[1].id, "claude-3-sonnet");
+    }
+
+    #[test]
+    fn test_parse_response_extracts_input_modalities_metadata() {
+        let json = r#"{
+            "object":"list",
+            "data":[
+                {"id":"array-input","input":[" Text ","IMAGE","audio","image"]},
+                {"id":"snake","input_modalities":["image","text"]},
+                {"id":"camel","inputModalities":["text"]},
+                {"id":"nested","modalities":{"input":["text","image"]}},
+                {"id":"vision-true","vision":true},
+                {"id":"supports-image-true","supports_image":true},
+                {"id":"supportsImage-false","supportsImage":false},
+                {"id":"empty","input":["audio"," "]},
+                {"id":"none"}
+            ]
+        }"#;
+        let resp: ModelsResponse = serde_json::from_str(json).unwrap();
+        let data = resp.data.unwrap();
+        let fetched: Vec<FetchedModel> = data.into_iter().map(fetched_model_from_entry).collect();
+
+        assert_eq!(
+            fetched
+                .iter()
+                .find(|m| m.id == "array-input")
+                .and_then(|m| m.input_modalities.as_ref()),
+            Some(&vec!["text".to_string(), "image".to_string()])
+        );
+        assert_eq!(
+            fetched
+                .iter()
+                .find(|m| m.id == "snake")
+                .and_then(|m| m.input_modalities.as_ref()),
+            Some(&vec!["image".to_string(), "text".to_string()])
+        );
+        assert_eq!(
+            fetched
+                .iter()
+                .find(|m| m.id == "camel")
+                .and_then(|m| m.input_modalities.as_ref()),
+            Some(&vec!["text".to_string()])
+        );
+        assert_eq!(
+            fetched
+                .iter()
+                .find(|m| m.id == "nested")
+                .and_then(|m| m.input_modalities.as_ref()),
+            Some(&vec!["text".to_string(), "image".to_string()])
+        );
+        assert_eq!(
+            fetched
+                .iter()
+                .find(|m| m.id == "vision-true")
+                .and_then(|m| m.input_modalities.as_ref()),
+            Some(&vec!["text".to_string(), "image".to_string()])
+        );
+        assert_eq!(
+            fetched
+                .iter()
+                .find(|m| m.id == "supports-image-true")
+                .and_then(|m| m.input_modalities.as_ref()),
+            Some(&vec!["text".to_string(), "image".to_string()])
+        );
+        assert_eq!(
+            fetched
+                .iter()
+                .find(|m| m.id == "supportsImage-false")
+                .and_then(|m| m.input_modalities.as_ref()),
+            Some(&vec!["text".to_string()])
+        );
+        assert!(fetched
+            .iter()
+            .find(|m| m.id == "empty")
+            .is_some_and(|m| m.input_modalities.is_none()));
+        assert!(fetched
+            .iter()
+            .find(|m| m.id == "none")
+            .is_some_and(|m| m.input_modalities.is_none()));
     }
 
     #[test]

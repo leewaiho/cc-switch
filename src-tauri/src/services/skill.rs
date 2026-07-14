@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+#[cfg(windows)]
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::timeout;
@@ -19,6 +21,12 @@ use crate::app_config::{AppType, InstalledSkill, SkillApps, UnmanagedSkill};
 use crate::config::get_app_config_dir;
 use crate::database::Database;
 use crate::error::format_skill_error;
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 // ========== 数据结构 ==========
 
@@ -107,8 +115,37 @@ pub struct SkillRepo {
     pub name: String,
     /// 分支 (默认 "main")
     pub branch: String,
+    /// GitHub Personal Access Token（可选；仅用于私有仓库下载）
+    #[serde(rename = "accessToken", alias = "access_token", default)]
+    pub access_token: Option<String>,
     /// 是否启用
     pub enabled: bool,
+}
+
+/// 对前端暴露的仓库信息；不包含 PAT。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRepoView {
+    pub owner: String,
+    pub name: String,
+    pub branch: String,
+    pub enabled: bool,
+    pub has_access_token: bool,
+}
+
+impl From<&SkillRepo> for SkillRepoView {
+    fn from(repo: &SkillRepo) -> Self {
+        Self {
+            owner: repo.owner.clone(),
+            name: repo.name.clone(),
+            branch: repo.branch.clone(),
+            enabled: repo.enabled,
+            has_access_token: repo
+                .access_token
+                .as_deref()
+                .is_some_and(|token| !token.trim().is_empty()),
+        }
+    }
 }
 
 /// 技能安装状态（旧版兼容）
@@ -139,24 +176,28 @@ impl Default for SkillStore {
                     owner: "anthropics".to_string(),
                     name: "skills".to_string(),
                     branch: "main".to_string(),
+                    access_token: None,
                     enabled: true,
                 },
                 SkillRepo {
                     owner: "ComposioHQ".to_string(),
                     name: "awesome-claude-skills".to_string(),
                     branch: "master".to_string(),
+                    access_token: None,
                     enabled: true,
                 },
                 SkillRepo {
                     owner: "cexll".to_string(),
                     name: "myclaude".to_string(),
                     branch: "master".to_string(),
+                    access_token: None,
                     enabled: true,
                 },
                 SkillRepo {
                     owner: "JimLiu".to_string(),
                     name: "baoyu-skills".to_string(),
                     branch: "main".to_string(),
+                    access_token: None,
                     enabled: true,
                 },
             ],
@@ -456,7 +497,67 @@ impl SkillService {
         format!("https://github.com/{owner}/{repo}/blob/{branch}/{doc_path}")
     }
 
-    /// 从旧 readme_url 中提取仓库内文档路径，兼容 `blob`/`tree` 两种格式
+    /// 为安装/更新操作恢复仓库配置；已安装 Skill 不保存 PAT，始终从仓库配置读取。
+    fn configured_repo_for_download(
+        db: &Arc<Database>,
+        owner: &str,
+        name: &str,
+        branch: &str,
+    ) -> Result<SkillRepo> {
+        let mut repo = db
+            .get_skill_repos()?
+            .into_iter()
+            .find(|repo| repo.owner == owner && repo.name == name)
+            .unwrap_or_else(|| SkillRepo {
+                owner: owner.to_string(),
+                name: name.to_string(),
+                branch: branch.to_string(),
+                access_token: None,
+                enabled: true,
+            });
+        repo.branch = branch.to_string();
+        Ok(repo)
+    }
+
+    /// 构建仓库 ZIP 下载请求。
+    ///
+    /// 公开仓库沿用 GitHub archive URL；配置 PAT 的私有仓库使用 GitHub REST
+    /// zipball endpoint，并以 Bearer token 认证。PAT 绝不放进 URL、日志或 Skill 元数据。
+    fn build_repo_download_request(
+        client: &reqwest::Client,
+        repo: &SkillRepo,
+        branch: &str,
+    ) -> reqwest::RequestBuilder {
+        let access_token = repo
+            .access_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty());
+
+        match access_token {
+            Some(token) => {
+                let url = format!(
+                    "https://api.github.com/repos/{}/{}/zipball/{}",
+                    repo.owner, repo.name, branch
+                );
+                client
+                    .get(url)
+                    .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2022-11-28")
+                    .header(reqwest::header::USER_AGENT, "CC-Switch")
+                    .bearer_auth(token)
+            }
+            None => {
+                let url = format!(
+                    "https://github.com/{}/{}/archive/refs/heads/{}.zip",
+                    repo.owner, repo.name, branch
+                );
+                client.get(url)
+            }
+        }
+    }
+
+    /// 从旧 readme_url 中提取仓库内文档路径，兼容 `blob`/`tree` 两种格式。
     fn extract_doc_path_from_url(url: &str) -> Option<String> {
         let marker = if url.contains("/blob/") {
             "/blob/"
@@ -648,12 +749,12 @@ impl SkillService {
 
         // 如果已存在则跳过下载
         if !dest.exists() {
-            let repo = SkillRepo {
-                owner: skill.repo_owner.clone(),
-                name: skill.repo_name.clone(),
-                branch: skill.repo_branch.clone(),
-                enabled: true,
-            };
+            let repo = Self::configured_repo_for_download(
+                db,
+                &skill.repo_owner,
+                &skill.repo_name,
+                &skill.repo_branch,
+            )?;
 
             // 下载仓库
             let (temp_dir, used_branch) = timeout(
@@ -898,11 +999,12 @@ impl SkillService {
         let ssot_dir = Self::get_ssot_dir()?;
 
         for ((owner, name, branch), group_skills) in &repo_groups {
-            let repo = SkillRepo {
-                owner: owner.clone(),
-                name: name.clone(),
-                branch: branch.clone(),
-                enabled: true,
+            let repo = match Self::configured_repo_for_download(db, owner, name, branch) {
+                Ok(repo) => repo,
+                Err(e) => {
+                    log::warn!("读取仓库 {owner}/{name} 的配置失败: {e}");
+                    continue;
+                }
             };
 
             // 下载仓库 ZIP
@@ -1005,12 +1107,7 @@ impl SkillService {
             _ => return Err(anyhow!("Cannot update local skill: {skill_id}")),
         };
 
-        let repo = SkillRepo {
-            owner: owner.clone(),
-            name: name.clone(),
-            branch: branch.clone(),
-            enabled: true,
-        };
+        let repo = Self::configured_repo_for_download(db, &owner, &name, &branch)?;
 
         let ssot_dir = Self::get_ssot_dir()?;
 
@@ -1577,6 +1674,128 @@ impl SkillService {
         crate::settings::get_skill_sync_method()
     }
 
+    /// 将 `\\wsl$\\<distro>\\...` 或 `\\wsl.localhost\\<distro>\\...` 解析为发行版和 POSIX 路径。
+    ///
+    /// 不使用 `Path::components`，以便该解析器可以在非 Windows 单元测试中覆盖。
+    fn parse_wsl_unc_path(path: &Path) -> Option<(String, PathBuf)> {
+        let mut normalized = path.to_string_lossy().replace('\\', "/");
+        if let Some(rest) = normalized.strip_prefix("//?/UNC/") {
+            normalized = format!("//{rest}");
+        }
+        let trimmed = normalized.strip_prefix("//")?;
+        let mut parts = trimmed.split('/').filter(|part| !part.is_empty());
+        let server = parts.next()?;
+        if !server.eq_ignore_ascii_case("wsl$") && !server.eq_ignore_ascii_case("wsl.localhost") {
+            return None;
+        }
+        let distro = parts.next()?.to_string();
+        let posix_path = format!("/{}", parts.collect::<Vec<_>>().join("/"));
+        Some((distro, PathBuf::from(posix_path)))
+    }
+
+    /// 将 Windows 本地绝对路径映射为同机 WSL 可见的 `/mnt/<drive>/...` 路径。
+    fn windows_path_to_wsl_mount(path: &Path) -> Option<PathBuf> {
+        let normalized = path.to_string_lossy().replace('\\', "/");
+        let bytes = normalized.as_bytes();
+        if bytes.len() < 3
+            || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':'
+            || bytes[2] != b'/'
+        {
+            return None;
+        }
+
+        let drive = (bytes[0] as char).to_ascii_lowercase();
+        Some(PathBuf::from(format!("/mnt/{drive}/{}", &normalized[3..])))
+    }
+
+    #[cfg(windows)]
+    fn sync_to_wsl_app_dir(source: &Path, dest: &Path, method: SyncMethod) -> Result<bool> {
+        let Some((distro, dest_posix)) = Self::parse_wsl_unc_path(dest) else {
+            return Ok(false);
+        };
+        let source_posix = Self::windows_path_to_wsl_mount(source).ok_or_else(|| {
+            anyhow!(
+                "WSL Skill 同步仅支持 Windows 本地 SSOT 目录: {}",
+                source.display()
+            )
+        })?;
+
+        let copy_or_link = match method {
+            SyncMethod::Symlink => "ln -s \"$src\" \"$tmp\"",
+            SyncMethod::Auto | SyncMethod::Copy => "cp -a \"$src\" \"$tmp\"",
+        };
+        let script = format!(
+            "set -eu; src=\"$1\"; dest=\"$2\"; tmp=\"${{dest}}.cc-switch-tmp-$$\"; \\
+             rm -rf \"$tmp\"; mkdir -p \"$(dirname \"$dest\")\"; {copy_or_link}; \\
+             test -f \"$tmp/SKILL.md\"; rm -rf \"$dest\"; mv \"$tmp\" \"$dest\""
+        );
+
+        let mut command = Command::new("wsl.exe");
+        command
+            .args(["-d", &distro, "--exec", "sh", "-c", &script, "sh"])
+            .arg(&source_posix)
+            .arg(&dest_posix)
+            .creation_flags(CREATE_NO_WINDOW);
+        let output = command.output().with_context(|| {
+            format!(
+                "无法启动 wsl.exe 同步 Skill 到 [WSL:{distro}] {}",
+                dest_posix.display()
+            )
+        })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if stderr.is_empty() { stdout } else { stderr };
+            return Err(anyhow!(
+                "同步 Skill 到 [WSL:{distro}] 失败 (exit {:?}): {}",
+                output.status.code(),
+                detail
+            ));
+        }
+
+        Ok(true)
+    }
+
+    #[cfg(not(windows))]
+    fn sync_to_wsl_app_dir(_source: &Path, _dest: &Path, _method: SyncMethod) -> Result<bool> {
+        Ok(false)
+    }
+
+    #[cfg(windows)]
+    fn remove_from_wsl_app_dir(dest: &Path) -> Result<bool> {
+        let Some((distro, dest_posix)) = Self::parse_wsl_unc_path(dest) else {
+            return Ok(false);
+        };
+        let output = Command::new("wsl.exe")
+            .args(["-d", &distro, "--exec", "rm", "-rf"])
+            .arg(&dest_posix)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .with_context(|| {
+                format!(
+                    "无法启动 wsl.exe 从 [WSL:{distro}] 删除 Skill: {}",
+                    dest_posix.display()
+                )
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if stderr.is_empty() { stdout } else { stderr };
+            return Err(anyhow!(
+                "从 [WSL:{distro}] 删除 Skill 失败 (exit {:?}): {}",
+                output.status.code(),
+                detail
+            ));
+        }
+        Ok(true)
+    }
+
+    #[cfg(not(windows))]
+    fn remove_from_wsl_app_dir(_dest: &Path) -> Result<bool> {
+        Ok(false)
+    }
+
     /// 同步 Skill 到应用目录（使用 symlink 或 copy）
     ///
     /// 根据配置和平台选择最佳同步方式：
@@ -1599,6 +1818,10 @@ impl SkillService {
         let dest = app_dir.join(directory);
 
         let sync_method = Self::get_sync_method();
+        if Self::sync_to_wsl_app_dir(&source, &dest, sync_method)? {
+            log::debug!("Skill {directory} 已通过 WSL 同步到 {app:?}");
+            return Ok(());
+        }
 
         match sync_method {
             SyncMethod::Auto => {
@@ -1762,6 +1985,10 @@ impl SkillService {
 
         let app_dir = Self::get_app_skills_dir(app)?;
         let skill_path = app_dir.join(directory);
+
+        if Self::remove_from_wsl_app_dir(&skill_path)? {
+            return Ok(());
+        }
 
         if skill_path.exists() || Self::is_symlink(&skill_path) {
             Self::remove_path(&skill_path)?;
@@ -2220,14 +2447,12 @@ impl SkillService {
             branches.push("master");
         }
 
+        let client = crate::proxy::http_client::get();
         let mut last_error = None;
         for branch in branches {
-            let url = format!(
-                "https://github.com/{}/{}/archive/refs/heads/{}.zip",
-                repo.owner, repo.name, branch
-            );
+            let request = Self::build_repo_download_request(&client, repo, branch);
 
-            match self.download_and_extract(&url, &temp_path).await {
+            match self.download_and_extract(request, &temp_path).await {
                 Ok(_) => {
                     return Ok((temp_path, branch.to_string()));
                 }
@@ -2242,9 +2467,12 @@ impl SkillService {
     }
 
     /// 下载并解压 ZIP
-    async fn download_and_extract(&self, url: &str, dest: &Path) -> Result<()> {
-        let client = crate::proxy::http_client::get();
-        let response = client.get(url).send().await?;
+    async fn download_and_extract(
+        &self,
+        request: reqwest::RequestBuilder,
+        dest: &Path,
+    ) -> Result<()> {
+        let response = request.send().await?;
         if !response.status().is_success() {
             let status = response.status().as_u16().to_string();
             return Err(anyhow::anyhow!(format_skill_error(
@@ -2920,6 +3148,7 @@ fn save_repos_from_lock(
                     name: info.repo.clone(),
                     // 未知分支时使用 HEAD 语义，后续下载会回退到 main/master。
                     branch: info.branch.clone().unwrap_or_else(|| "HEAD".to_string()),
+                    access_token: None,
                     enabled: true,
                 };
                 if let Err(e) = db.save_skill_repo(&skill_repo) {
@@ -3070,6 +3299,91 @@ mod tests {
     }
 
     #[test]
+    fn skill_repo_accepts_camel_case_access_token_from_renderer() {
+        let repo: SkillRepo = serde_json::from_value(serde_json::json!({
+            "owner": "weihaostudio",
+            "name": "agent-skills",
+            "branch": "main",
+            "accessToken": "github_pat_example",
+            "enabled": true
+        }))
+        .expect("deserialize renderer payload");
+
+        assert_eq!(repo.access_token.as_deref(), Some("github_pat_example"));
+    }
+
+    #[test]
+    fn skill_repo_view_excludes_pat_from_serialized_data() {
+        let repo = SkillRepo {
+            owner: "weihaostudio".to_string(),
+            name: "agent-skills".to_string(),
+            branch: "main".to_string(),
+            access_token: Some("github_pat_example".to_string()),
+            enabled: true,
+        };
+
+        let serialized =
+            serde_json::to_string(&SkillRepoView::from(&repo)).expect("serialize repository view");
+
+        assert!(serialized.contains("hasAccessToken"));
+        assert!(!serialized.contains("github_pat_example"));
+        assert!(!serialized.contains("\"access_token\":"));
+    }
+
+    #[test]
+    fn private_repo_download_uses_bearer_auth_without_embedding_pat_in_url() {
+        let repo = SkillRepo {
+            owner: "weihaostudio".to_string(),
+            name: "agent-skills".to_string(),
+            branch: "main".to_string(),
+            access_token: Some("github_pat_example".to_string()),
+            enabled: true,
+        };
+        let client = reqwest::Client::new();
+
+        let request = SkillService::build_repo_download_request(&client, &repo, "main")
+            .build()
+            .expect("private repo request should build");
+
+        assert_eq!(
+            request.url().as_str(),
+            "https://api.github.com/repos/weihaostudio/agent-skills/zipball/main"
+        );
+        assert!(!request.url().as_str().contains("github_pat_example"));
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer github_pat_example")
+        );
+    }
+
+    #[test]
+    fn public_repo_download_uses_archive_url_without_authorization_header() {
+        let repo = SkillRepo {
+            owner: "anthropics".to_string(),
+            name: "skills".to_string(),
+            branch: "main".to_string(),
+            access_token: None,
+            enabled: true,
+        };
+        let client = reqwest::Client::new();
+
+        let request = SkillService::build_repo_download_request(&client, &repo, "main")
+            .build()
+            .expect("public repo request should build");
+
+        assert_eq!(
+            request.url().as_str(),
+            "https://github.com/anthropics/skills/archive/refs/heads/main.zip"
+        );
+        assert!(!request
+            .headers()
+            .contains_key(reqwest::header::AUTHORIZATION));
+    }
+
+    #[test]
     fn resolve_skill_source_dir_returns_repo_root_for_root_level_skill() {
         let temp = tempdir().expect("tempdir");
         write_skill(temp.path(), "Root Skill");
@@ -3102,6 +3416,33 @@ mod tests {
             .expect("install name should fall back to the matching discovered skill directory");
 
         assert_eq!(resolved, nested);
+    }
+
+    #[test]
+    fn parse_wsl_unc_path_derives_distro_and_posix_target() {
+        let path =
+            Path::new(r"\\wsl.localhost\Ubuntu-22.04\home\weihao\.claude\skills\git-workflow");
+
+        let (distro, target) = SkillService::parse_wsl_unc_path(path)
+            .expect("WSL UNC skill destination should be recognized");
+
+        assert_eq!(distro, "Ubuntu-22.04");
+        assert_eq!(
+            target,
+            PathBuf::from("/home/weihao/.claude/skills/git-workflow")
+        );
+    }
+
+    #[test]
+    fn windows_path_to_wsl_mount_maps_ssot_source() {
+        let source = Path::new(r"C:\Users\weihao\.cc-switch\skills\git-workflow");
+
+        assert_eq!(
+            SkillService::windows_path_to_wsl_mount(source),
+            Some(PathBuf::from(
+                "/mnt/c/Users/weihao/.cc-switch/skills/git-workflow"
+            ))
+        );
     }
 
     #[test]

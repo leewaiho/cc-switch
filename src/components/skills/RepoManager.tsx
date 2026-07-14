@@ -12,12 +12,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Trash2, ExternalLink, Plus } from "lucide-react";
 import { settingsApi } from "@/lib/api";
-import type { DiscoverableSkill, SkillRepo } from "@/lib/api/skills";
+import type {
+  DiscoverableSkill,
+  SkillRepo,
+  SkillRepoListItem,
+} from "@/lib/api/skills";
 
 interface RepoManagerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  repos: SkillRepo[];
+  repos: SkillRepoListItem[];
   skills: DiscoverableSkill[];
   onAdd: (repo: SkillRepo) => Promise<void>;
   onRemove: (owner: string, name: string) => Promise<void>;
@@ -34,6 +38,7 @@ export function RepoManager({
   const { t } = useTranslation();
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("");
+  const [accessToken, setAccessToken] = useState("");
   const [error, setError] = useState("");
 
   const getSkillCount = (repo: SkillRepo) =>
@@ -78,11 +83,13 @@ export function RepoManager({
         owner: parsed.owner,
         name: parsed.name,
         branch: branch || "main",
+        accessToken: accessToken.trim() || undefined,
         enabled: true,
       });
 
       setRepoUrl("");
       setBranch("");
+      setAccessToken("");
     } catch (e) {
       setError(e instanceof Error ? e.message : t("skills.repo.addFailed"));
     }
@@ -127,6 +134,16 @@ export function RepoManager({
                     onChange={(e) => setBranch(e.target.value)}
                     className="flex-1"
                   />
+                  <Input
+                    id="access-token"
+                    type="password"
+                    autoComplete="new-password"
+                    placeholder={t("skills.repo.accessTokenPlaceholder")}
+                    aria-label={t("skills.repo.accessToken")}
+                    value={accessToken}
+                    onChange={(e) => setAccessToken(e.target.value)}
+                    className="flex-1"
+                  />
                   <Button
                     onClick={handleAdd}
                     className="w-full sm:w-auto sm:px-4"
@@ -166,6 +183,11 @@ export function RepoManager({
                               count: getSkillCount(repo),
                             })}
                           </span>
+                          {repo.hasAccessToken && (
+                            <span className="ml-2 inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-[11px]">
+                              {t("skills.repo.private")}
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div className="flex gap-2">

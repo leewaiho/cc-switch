@@ -10,14 +10,14 @@ import {
 } from "@/components/skills/SkillsPage";
 import type {
   DiscoverableSkill,
-  SkillRepo,
+  SkillRepoListItem,
   SkillsShDiscoverableSkill,
   SkillsShSearchResult,
 } from "@/lib/api/skills";
 
 const installMutateAsyncMock = vi.fn();
 let discoverableSkillsMock: DiscoverableSkill[] = [];
-let skillReposMock: SkillRepo[] = [];
+let skillReposMock: SkillRepoListItem[] = [];
 const refetchDiscoverableMock = vi.fn();
 
 // Stable cache so repeated renders see referentially-equal data.
@@ -118,11 +118,14 @@ const makeDiscoverableSkill = (
   ...overrides,
 });
 
-const makeSkillRepo = (overrides: Partial<SkillRepo> = {}): SkillRepo => ({
+const makeSkillRepo = (
+  overrides: Partial<SkillRepoListItem> = {},
+): SkillRepoListItem => ({
   owner: "owner-a",
   name: "repo-a",
   branch: "main",
   enabled: true,
+  hasAccessToken: false,
   ...overrides,
 });
 

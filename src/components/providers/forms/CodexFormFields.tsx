@@ -1,5 +1,30 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import { FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -21,6 +46,7 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  GripVertical,
   Loader2,
   Plus,
   Trash2,
@@ -41,6 +67,7 @@ import type {
   CodexCatalogModel,
   CodexChatReasoning,
   PromptCacheRoutingMode,
+  CodexDefaultReasoningEffort,
   ProviderCategory,
 } from "@/types";
 
@@ -92,6 +119,10 @@ interface CodexFormFieldsProps {
   onCodexChatReasoningChange?: (value: CodexChatReasoning) => void;
   promptCacheRouting: PromptCacheRoutingMode;
   onPromptCacheRoutingChange: (value: PromptCacheRoutingMode) => void;
+  codexDefaultReasoningEffort?: CodexDefaultReasoningEffort;
+  onCodexDefaultReasoningEffortChange?: (
+    value: CodexDefaultReasoningEffort,
+  ) => void;
 
   // Model Catalog
   catalogModels?: CodexCatalogModel[];
@@ -111,7 +142,86 @@ interface CodexFormFieldsProps {
 
 type CodexCatalogRow = CodexCatalogModel & { rowId: string };
 
+interface SortableCatalogRowProps {
+  id: string;
+  dragLabel: string;
+  children: ReactNode;
+}
+
+function SortableCatalogRow({
+  id,
+  dragLabel,
+  children,
+}: SortableCatalogRowProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.7 : 1,
+    position: "relative",
+    zIndex: isDragging ? 10 : undefined,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "flex items-start gap-1 rounded-md transition-shadow",
+        isDragging && "bg-background shadow-lg ring-1 ring-primary/30",
+      )}
+    >
+      <button
+        type="button"
+        className={cn(
+          "mt-0.5 flex h-8 w-8 shrink-0 cursor-grab items-center justify-center rounded-md",
+          "text-muted-foreground/60 transition-colors hover:bg-muted hover:text-muted-foreground",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          isDragging && "cursor-grabbing",
+        )}
+        aria-label={dragLabel}
+        title={dragLabel}
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="h-4 w-4" />
+      </button>
+      <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_140px_140px_36px]">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const normalizeCatalogInputModalities = (
+  inputModalities?: CodexCatalogModel["inputModalities"],
+): NonNullable<CodexCatalogModel["inputModalities"]> => {
+  const normalized: NonNullable<CodexCatalogModel["inputModalities"]> = [];
+  for (const modality of inputModalities ?? []) {
+    if (typeof modality !== "string") continue;
+    const value = modality.trim().toLowerCase();
+    if (
+      (value === "text" || value === "image") &&
+      !normalized.includes(value)
+    ) {
+      normalized.push(value);
+    }
+  }
+  return normalized;
+};
+
 function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
+  const inputModalities = normalizeCatalogInputModalities(
+    seed?.inputModalities,
+  );
+
   return {
     rowId: crypto.randomUUID(),
     model: seed?.model ?? "",
@@ -122,12 +232,26 @@ function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
     ...(seed?.supportsParallelToolCalls !== undefined
       ? { supportsParallelToolCalls: seed.supportsParallelToolCalls }
       : {}),
-    ...(seed?.inputModalities ? { inputModalities: seed.inputModalities } : {}),
+    // Preserve the fork policy: unless image support is explicit, catalog rows
+    // default to text-only. Users can still switch the row to text + image.
+    inputModalities: inputModalities.length > 0 ? inputModalities : ["text"],
     ...(seed?.baseInstructions
       ? { baseInstructions: seed.baseInstructions }
       : {}),
   };
 }
+
+const catalogInputModeValue = (
+  row: CodexCatalogModel,
+): "text" | "text-image" =>
+  normalizeCatalogInputModalities(row.inputModalities).includes("image")
+    ? "text-image"
+    : "text";
+
+const catalogInputModalitiesForMode = (
+  mode: string,
+): CodexCatalogModel["inputModalities"] =>
+  mode === "text-image" ? ["text", "image"] : ["text"];
 
 // Compares rows (with rowId) to incoming models (without) by data fields only,
 // so both sync effects can use the same equality definition. Hidden native-profile
@@ -152,6 +276,38 @@ function catalogRowsMatchModels(
         JSON.stringify(incoming.inputModalities ?? [])
     );
   });
+}
+
+function applyFetchedModelModalitiesToCatalogRows(
+  rows: CodexCatalogRow[],
+  models: FetchedModel[],
+): CodexCatalogRow[] {
+  const modelsById = new Map(models.map((model) => [model.id, model]));
+  let changed = false;
+
+  const nextRows = rows.map((row) => {
+    const modelId = row.model.trim();
+    if (!modelId) return row;
+
+    const inputModalities = normalizeCatalogInputModalities(
+      modelsById.get(modelId)?.inputModalities,
+    );
+    if (inputModalities.length === 0) return row;
+
+    const currentInputModalities = normalizeCatalogInputModalities(
+      row.inputModalities,
+    );
+    if (
+      JSON.stringify(currentInputModalities) === JSON.stringify(inputModalities)
+    ) {
+      return row;
+    }
+
+    changed = true;
+    return { ...row, inputModalities };
+  });
+
+  return changed ? nextRows : rows;
 }
 
 export function CodexFormFields({
@@ -187,6 +343,8 @@ export function CodexFormFields({
   onCodexChatReasoningChange,
   promptCacheRouting,
   onPromptCacheRoutingChange,
+  codexDefaultReasoningEffort = "high",
+  onCodexDefaultReasoningEffortChange,
   catalogModels = [],
   onCatalogModelsChange,
   speedTestEndpoints,
@@ -323,6 +481,9 @@ export function CodexFormFields({
       .then((models) => {
         if (seq !== fetchModelsSeqRef.current) return;
         setFetchedModels(models);
+        setCatalogRows((rows) =>
+          applyFetchedModelModalitiesToCatalogRows(rows, models),
+        );
         if (models.length === 0) {
           toast.info(t("providerForm.fetchModelsEmpty"));
         } else {
@@ -397,6 +558,27 @@ export function CodexFormFields({
       }),
     ]);
   }, [onCatalogModelsChange, trimmedDefaultModel]);
+
+  const catalogSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  const handleCatalogDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    setCatalogRows((current) => {
+      const oldIndex = current.findIndex((row) => row.rowId === active.id);
+      const newIndex = current.findIndex((row) => row.rowId === over.id);
+      if (oldIndex === -1 || newIndex === -1) return current;
+      return arrayMove(current, oldIndex, newIndex);
+    });
+  }, []);
 
   const renderCatalogActionButtons = (onAdd: () => void, addLabel: string) => (
     <div className="flex gap-1">
@@ -715,6 +897,60 @@ export function CodexFormFields({
               </div>
             )}
 
+            <div
+              className={cn(
+                "space-y-3",
+                (shouldShowSpeedTest || isChatFormat) &&
+                  "border-t border-border-default pt-3",
+              )}
+            >
+              <div className="space-y-1">
+                <FormLabel htmlFor="codex-default-reasoning-effort">
+                  {t("codexConfig.defaultReasoningEffort", {
+                    defaultValue: "默认推理级别",
+                  })}
+                </FormLabel>
+                <Select
+                  value={codexDefaultReasoningEffort}
+                  onValueChange={(value) =>
+                    onCodexDefaultReasoningEffortChange?.(
+                      value as CodexDefaultReasoningEffort,
+                    )
+                  }
+                >
+                  <SelectTrigger
+                    id="codex-default-reasoning-effort"
+                    className="w-full"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">
+                      {t("codexConfig.defaultReasoningEffortLow", {
+                        defaultValue: "Low",
+                      })}
+                    </SelectItem>
+                    <SelectItem value="medium">
+                      {t("codexConfig.defaultReasoningEffortMedium", {
+                        defaultValue: "Medium",
+                      })}
+                    </SelectItem>
+                    <SelectItem value="high">
+                      {t("codexConfig.defaultReasoningEffortHigh", {
+                        defaultValue: "High",
+                      })}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {t("codexConfig.defaultReasoningEffortHint", {
+                    defaultValue:
+                      "写入 Codex config.toml 的 model_reasoning_effort，控制 Codex 向模型发送请求时的默认推理强度；这不同于下方上游 Chat 参数转换能力。",
+                  })}
+                </p>
+              </div>
+            </div>
+
             {isChatFormat && canEditReasoning && (
               <div
                 className={cn(
@@ -882,96 +1118,191 @@ export function CodexFormFields({
                       <span />
                     </div>
 
-                    {catalogRows.map((row, index) => (
-                      <div
-                        key={row.rowId}
-                        className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_1fr_140px_36px]"
-                      >
-                        <Input
-                          value={row.displayName ?? ""}
-                          onChange={(event) =>
-                            handleUpdateCatalogRow(index, {
-                              displayName: event.target.value,
-                            })
-                          }
-                          placeholder={t(
-                            "codexConfig.catalogDisplayNamePlaceholder",
-                            {
-                              defaultValue: "例如: DeepSeek V4 Flash",
-                            },
-                          )}
-                          aria-label={t("codexConfig.catalogColumnDisplay", {
+                    <div className="space-y-2">
+                      {/* 列头：md+ 显示 */}
+                      <div className="hidden grid-cols-[1fr_1fr_140px_140px_36px] gap-2 pl-10 pr-1 text-xs font-medium text-muted-foreground md:grid">
+                        <span>
+                          {t("codexConfig.catalogColumnDisplay", {
                             defaultValue: "菜单显示名",
                           })}
-                        />
-                        <div className="flex gap-1">
-                          <Input
-                            value={row.model}
-                            onChange={(event) =>
-                              handleUpdateCatalogRow(index, {
-                                model: event.target.value,
-                              })
-                            }
-                            placeholder={t(
-                              "codexConfig.catalogModelPlaceholder",
-                              {
-                                defaultValue: "例如: deepseek-v4-flash",
-                              },
-                            )}
-                            aria-label={t("codexConfig.catalogColumnModel", {
-                              defaultValue: "实际请求模型",
-                            })}
-                            className="flex-1"
-                          />
-                          {fetchedModels.length > 0 && (
-                            <ModelDropdown
-                              models={fetchedModels}
-                              onSelect={(id) =>
-                                handleUpdateCatalogRow(index, {
-                                  model: id,
-                                  displayName: row.displayName?.trim()
-                                    ? row.displayName
-                                    : id,
-                                })
-                              }
-                            />
-                          )}
-                        </div>
-                        <Input
-                          type="number"
-                          min={1}
-                          inputMode="numeric"
-                          value={row.contextWindow ?? ""}
-                          onChange={(event) =>
-                            handleUpdateCatalogRow(index, {
-                              contextWindow: event.target.value.replace(
-                                /[^\d]/g,
-                                "",
-                              ),
-                            })
-                          }
-                          placeholder={t(
-                            "codexConfig.contextWindowPlaceholder",
-                            {
-                              defaultValue: "例如: 128000",
-                            },
-                          )}
-                          aria-label={t("codexConfig.catalogColumnContext", {
+                        </span>
+                        <span>
+                          {t("codexConfig.catalogColumnModel", {
+                            defaultValue: "实际请求模型",
+                          })}
+                        </span>
+                        <span>
+                          {t("codexConfig.catalogColumnContext", {
                             defaultValue: "上下文窗口",
                           })}
-                        />
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-9 w-9 text-muted-foreground hover:text-destructive"
-                          onClick={() => handleRemoveCatalogRow(index)}
-                          title={t("common.delete", { defaultValue: "删除" })}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        </span>
+                        <span>
+                          {t("codexConfig.catalogColumnInput", {
+                            defaultValue: "输入类型",
+                          })}
+                        </span>
+                        <span />
                       </div>
-                    ))}
+
+                      <DndContext
+                        sensors={catalogSensors}
+                        collisionDetection={closestCenter}
+                        onDragEnd={handleCatalogDragEnd}
+                      >
+                        <SortableContext
+                          items={catalogRows.map((row) => row.rowId)}
+                          strategy={verticalListSortingStrategy}
+                        >
+                          {catalogRows.map((row, index) => (
+                            <SortableCatalogRow
+                              key={row.rowId}
+                              id={row.rowId}
+                              dragLabel={t("codexConfig.catalogDragHandle", {
+                                defaultValue: "拖动调整模型顺序",
+                              })}
+                            >
+                              <Input
+                                value={row.displayName ?? ""}
+                                onChange={(event) =>
+                                  handleUpdateCatalogRow(index, {
+                                    displayName: event.target.value,
+                                  })
+                                }
+                                placeholder={t(
+                                  "codexConfig.catalogDisplayNamePlaceholder",
+                                  {
+                                    defaultValue: "例如: DeepSeek V4 Flash",
+                                  },
+                                )}
+                                aria-label={t(
+                                  "codexConfig.catalogColumnDisplay",
+                                  {
+                                    defaultValue: "菜单显示名",
+                                  },
+                                )}
+                              />
+                              <div className="flex gap-1">
+                                <Input
+                                  value={row.model}
+                                  onChange={(event) =>
+                                    handleUpdateCatalogRow(index, {
+                                      model: event.target.value,
+                                    })
+                                  }
+                                  placeholder={t(
+                                    "codexConfig.catalogModelPlaceholder",
+                                    {
+                                      defaultValue: "例如: deepseek-v4-flash",
+                                    },
+                                  )}
+                                  aria-label={t(
+                                    "codexConfig.catalogColumnModel",
+                                    {
+                                      defaultValue: "实际请求模型",
+                                    },
+                                  )}
+                                  className="flex-1"
+                                />
+                                {fetchedModels.length > 0 && (
+                                  <ModelDropdown
+                                    models={fetchedModels}
+                                    onSelect={(id, selected) => {
+                                      const inputModalities =
+                                        normalizeCatalogInputModalities(
+                                          selected?.inputModalities,
+                                        );
+                                      handleUpdateCatalogRow(index, {
+                                        model: id,
+                                        displayName: row.displayName?.trim()
+                                          ? row.displayName
+                                          : id,
+                                        ...(inputModalities.length > 0
+                                          ? { inputModalities }
+                                          : {}),
+                                      });
+                                    }}
+                                  />
+                                )}
+                              </div>
+                              <Input
+                                type="number"
+                                min={1}
+                                inputMode="numeric"
+                                value={row.contextWindow ?? ""}
+                                onChange={(event) =>
+                                  handleUpdateCatalogRow(index, {
+                                    contextWindow: event.target.value.replace(
+                                      /[^\d]/g,
+                                      "",
+                                    ),
+                                  })
+                                }
+                                placeholder={t(
+                                  "codexConfig.contextWindowPlaceholder",
+                                  {
+                                    defaultValue: "例如: 128000",
+                                  },
+                                )}
+                                aria-label={t(
+                                  "codexConfig.catalogColumnContext",
+                                  {
+                                    defaultValue: "上下文窗口",
+                                  },
+                                )}
+                              />
+                              <Select
+                                value={catalogInputModeValue(row)}
+                                onValueChange={(value) =>
+                                  handleUpdateCatalogRow(index, {
+                                    inputModalities:
+                                      catalogInputModalitiesForMode(value),
+                                  })
+                                }
+                              >
+                                <SelectTrigger
+                                  aria-label={t(
+                                    "codexConfig.catalogColumnInput",
+                                    {
+                                      defaultValue: "输入类型",
+                                    },
+                                  )}
+                                  title={t("codexConfig.catalogInputHelp", {
+                                    defaultValue:
+                                      "影响 Codex catalog 的 input_modalities，并决定图片请求是否按不支持图片降级。",
+                                  })}
+                                >
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="text">
+                                    {t("codexConfig.catalogInputText", {
+                                      defaultValue: "文本",
+                                    })}
+                                  </SelectItem>
+                                  <SelectItem value="text-image">
+                                    {t("codexConfig.catalogInputTextImage", {
+                                      defaultValue: "文本 + 图片",
+                                    })}
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-9 w-9 text-muted-foreground hover:text-destructive"
+                                onClick={() => handleRemoveCatalogRow(index)}
+                                title={t("common.delete", {
+                                  defaultValue: "删除",
+                                })}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </SortableCatalogRow>
+                          ))}
+                        </SortableContext>
+                      </DndContext>
+                    </div>
                   </div>
                 )}
               </div>
