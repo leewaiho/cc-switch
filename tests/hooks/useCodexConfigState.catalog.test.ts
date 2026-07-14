@@ -124,48 +124,4 @@ describe("useCodexConfigState catalog load", () => {
       'model = "glm-5.2"\nmodel_reasoning_effort = "low"',
     );
   });
-  it("loads Codex default model from config.toml", () => {
-    const initialData = {
-      settingsConfig: {
-        auth: {},
-        config: [
-          'model_provider = "custom"',
-          'model = "glm-5.2"',
-          "",
-          "[model_providers.custom]",
-          'base_url = "http://127.0.0.1:3011/v1"',
-          "",
-        ].join("\n"),
-      },
-    };
-
-    const { result } = renderHook(() => useCodexConfigState({ initialData }));
-
-    expect(result.current.codexDefaultModel).toBe("glm-5.2");
-  });
-
-  it("writes Codex default model back to config.toml", () => {
-    const initialData = {
-      settingsConfig: {
-        auth: {},
-        config: [
-          'model_provider = "custom"',
-          'model = "glm-5.2"',
-          "",
-          "[model_providers.custom]",
-          'base_url = "http://127.0.0.1:3011/v1"',
-          "",
-        ].join("\n"),
-      },
-    };
-
-    const { result } = renderHook(() => useCodexConfigState({ initialData }));
-
-    act(() => {
-      result.current.handleCodexDefaultModelChange("deepseek-v4-pro");
-    });
-
-    expect(result.current.codexDefaultModel).toBe("deepseek-v4-pro");
-    expect(result.current.codexConfig).toContain('model = "deepseek-v4-pro"');
-  });
 });

@@ -3,8 +3,8 @@ name: Build Artifacts
 on:
   push:
     branches:
-      - 'feature/**'
-      - 'release/ci'
+      - "feature/**"
+      - "release/ci"
   workflow_dispatch:
 
 permissions:
@@ -40,7 +40,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -89,24 +89,63 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo test --lib --manifest-path src-tauri/Cargo.toml catalog_model_entry
 
-      - name: Disable updater artifacts for unsigned build
+      - name: Prepare unsigned build configuration
         shell: bash
         run: |
-          node -e 'const fs=require("fs");const p="src-tauri/tauri.conf.json";const j=JSON.parse(fs.readFileSync(p,"utf8"));j.bundle.createUpdaterArtifacts=false;fs.writeFileSync(p,JSON.stringify(j,null,2));console.log("createUpdaterArtifacts =",j.bundle.createUpdaterArtifacts);'
+          node <<'NODE'
+          const fs = require("fs");
+          const path = "src-tauri/tauri.conf.json";
+          const config = JSON.parse(fs.readFileSync(path, "utf8"));
+          config.bundle.createUpdaterArtifacts = false;
+
+          if (process.env.GITHUB_REF.startsWith("refs/heads/feature/")) {
+            config.productName = "CC Switch Test";
+            config.identifier = "com.ccswitch.desktop.test";
+            config.app.windows[0].title = "CC Switch Test";
+            config.plugins["deep-link"].desktop.schemes = ["ccswitch-test"];
+            config.plugins.updater.endpoints = [
+              "https://cc-switch-test.invalid/latest.json",
+            ];
+          }
+
+          fs.writeFileSync(path, JSON.stringify(config, null, 2));
+          console.log({
+            productName: config.productName,
+            identifier: config.identifier,
+            createUpdaterArtifacts: config.bundle.createUpdaterArtifacts,
+          });
+          NODE
 
       - name: Build Tauri App (macOS x86_64)
         if: runner.os == 'macOS'
         env:
-          APPLE_SIGNING_IDENTITY: '-'
+          APPLE_SIGNING_IDENTITY: "-"
         run: pnpm tauri build --target x86_64-apple-darwin --bundles app,dmg
 
       - name: Build Tauri App (Windows x86_64)
         if: runner.os == 'Windows'
         run: pnpm tauri build
 
+      - name: Prepare isolated Windows portable test bundle
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/heads/feature/')
+        shell: pwsh
+        run: |
+          $bundle = "artifacts/windows-isolated"
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+          Copy-Item "src-tauri/target/release/cc-switch.exe" "$bundle/cc-switch-test.exe"
+          @'
+          @echo off
+          setlocal
+          set "CC_SWITCH_TEST_HOME=%LOCALAPPDATA%\CCSwitch-Test"
+          if not exist "%CC_SWITCH_TEST_HOME%" mkdir "%CC_SWITCH_TEST_HOME%"
+          start "CC Switch Test" "%~dp0cc-switch-test.exe"
+          '@ | Set-Content -Encoding ascii "$bundle/run-isolated.cmd"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}-${{ github.sha }}
-          path: ${{ matrix.artifact_path }}
+          path: |
+            ${{ matrix.artifact_path }}
+            artifacts/**
           if-no-files-found: error

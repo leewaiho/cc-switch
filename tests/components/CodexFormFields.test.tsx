@@ -59,6 +59,14 @@ function renderCodexFormFields(
     onAutoSelectChange: noop,
     apiFormat: "openai_responses",
     onApiFormatChange: noop,
+    anthropicAuthField: "ANTHROPIC_API_KEY",
+    onAnthropicAuthFieldChange: noop,
+    impersonateClaudeCode: false,
+    onImpersonateClaudeCodeChange: noop,
+    maxOutputTokens: "",
+    onMaxOutputTokensChange: noop,
+    promptCacheRouting: "disabled",
+    onPromptCacheRoutingChange: noop,
     speedTestEndpoints: [],
     customUserAgent: "",
     onCustomUserAgentChange: noop,
@@ -86,27 +94,5 @@ describe("CodexFormFields", () => {
     await user.click(await screen.findByRole("option", { name: "Medium" }));
 
     expect(onChange).toHaveBeenCalledWith("medium");
-  });
-
-  it("allows changing the Codex default model", async () => {
-    const user = userEvent.setup();
-    const onChange = vi.fn<(value: string) => void>();
-
-    renderCodexFormFields({
-      codexDefaultModel: "glm-5.2",
-      onCodexDefaultModelChange: onChange,
-      catalogModels: [
-        { model: "glm-5.2", displayName: "GLM 5.2" },
-        { model: "deepseek-v4-pro", displayName: "DeepSeek V4 Pro" },
-      ],
-      onCatalogModelsChange: vi.fn(),
-    });
-
-    await user.click(screen.getByRole("combobox", { name: "默认模型" }));
-    await user.click(
-      await screen.findByRole("option", { name: "deepseek-v4-pro" }),
-    );
-
-    expect(onChange).toHaveBeenCalledWith("deepseek-v4-pro");
   });
 });

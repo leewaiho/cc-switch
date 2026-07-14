@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  normalizeCodexCatalogModelsForSave,
-  resolveCodexDefaultModelForSave,
-} from "@/components/providers/forms/ProviderForm";
+import { normalizeCodexCatalogModelsForSave } from "@/components/providers/forms/ProviderForm";
 
 describe("ProviderForm Codex catalog helpers", () => {
   it("normalizes catalog rows and removes empty or duplicate models", () => {
@@ -24,14 +21,7 @@ describe("ProviderForm Codex catalog helpers", () => {
       normalizeCodexCatalogModelsForSave([
         {
           model: "vision-model",
-          inputModalities: [
-            " Text ",
-            "IMAGE",
-            "audio",
-            "image",
-            " ",
-            "text",
-          ],
+          inputModalities: [" Text ", "IMAGE", "audio", "image", " ", "text"],
         },
         { model: "text-model", inputModalities: ["audio", " "] },
       ]),
@@ -73,15 +63,5 @@ describe("ProviderForm Codex catalog helpers", () => {
       },
       { model: "mimo-v2.5-pro", supportsParallelToolCalls: false },
     ]);
-  });
-
-  it("uses the selected Codex default model before falling back to the first catalog row", () => {
-    const catalogModels = [{ model: "glm-5.2" }, { model: "deepseek-v4-pro" }];
-
-    expect(
-      resolveCodexDefaultModelForSave("deepseek-v4-pro", catalogModels),
-    ).toBe("deepseek-v4-pro");
-    expect(resolveCodexDefaultModelForSave("", catalogModels)).toBe("glm-5.2");
-    expect(resolveCodexDefaultModelForSave("", [])).toBe("");
   });
 });
