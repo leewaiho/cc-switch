@@ -89,7 +89,16 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo test --lib --manifest-path src-tauri/Cargo.toml catalog_model_entry
 
-      - name: Disable updater artifacts for unsigned build
+      - name: Clean stale bundle artifacts
+        shell: bash
+        run: |
+          rm -rf \
+            src-tauri/target/release/bundle/msi \
+            src-tauri/target/release/bundle/nsis \
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos \
+            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg
+
+      - name: Prepare unsigned build configuration
         shell: bash
         run: |
           node -e 'const fs=require("fs");const p="src-tauri/tauri.conf.json";const j=JSON.parse(fs.readFileSync(p,"utf8"));j.bundle.createUpdaterArtifacts=false;fs.writeFileSync(p,JSON.stringify(j,null,2));console.log("createUpdaterArtifacts =",j.bundle.createUpdaterArtifacts);'
