@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::config::{
@@ -142,12 +142,27 @@ impl CodexCatalogToolProfile {
     }
 }
 
-/// Default reasoning levels injected into every cc-switch-generated Codex model
-/// catalog entry. Custom/third-party providers consistently expose low/medium/high
-/// regardless of which template (cache/bundled/static) was used to build the entry.
-const DEFAULT_CODEX_REASONING_LEVELS: &[(&str, &str)] =
-    &[("low", "低"), ("medium", "中"), ("high", "高")];
-const DEFAULT_CODEX_REASONING_LEVEL: &str = "high";
+/// Last-resort choices for installations where neither the current Codex
+/// bundled catalog nor its cache is available. Runtime catalogs take precedence
+/// and can add newly introduced efforts without requiring a cc-switch release.
+const CODEX_REASONING_LEVEL_FALLBACKS: &[(&str, &str)] = &[
+    ("none", "No additional reasoning"),
+    ("low", "Fast responses with lighter reasoning"),
+    (
+        "medium",
+        "Balances speed and reasoning depth for everyday tasks",
+    ),
+    ("high", "Greater reasoning depth for complex problems"),
+    ("xhigh", "Extra high reasoning depth for complex problems"),
+    ("max", "Maximum reasoning depth for the hardest problems"),
+    ("ultra", "Maximum reasoning with automatic task delegation"),
+];
+
+/// Stable presentation order for known efforts. Any newly discovered effort is
+/// retained and appended in lexical order rather than discarded.
+const CODEX_REASONING_LEVEL_ORDER: &[&str] = &[
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
 
 /// Reserved built-in provider IDs from OpenAI Codex's config/model-provider
 /// catalog. Keep in sync with Codex `RESERVED_MODEL_PROVIDER_IDS` and legacy
@@ -456,11 +471,22 @@ fn codex_catalog_input_modalities(
     modalities.iter().map(|item| (*item).to_string()).collect()
 }
 
+fn codex_reasoning_level_efforts(levels: &[Value]) -> impl Iterator<Item = &str> {
+    levels.iter().filter_map(|level| {
+        level
+            .get("effort")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty())
+    })
+}
+
 fn codex_catalog_model_entry(
     template: &Value,
     spec: &CodexCatalogModelSpec,
     priority: usize,
     profile: CodexCatalogToolProfile,
+    fallback_reasoning_levels: &[Value],
 ) -> Value {
     let mut entry = template.clone();
     let Some(entry_obj) = entry.as_object_mut() else {
@@ -524,23 +550,54 @@ fn codex_catalog_model_entry(
         }
     }
 
-    // Normalize reasoning levels so every generated entry has the same
-    // low/medium/high choices and a deterministic default.
+    // Unless a provider explicitly declares its supported efforts, expose the
+    // full set known to this Codex installation. This lets users select an
+    // effort in Codex instead of cc-switch hiding a potentially supported one.
+    // Provider-declared capabilities remain an explicit restriction.
     entry_obj.insert(
         "supported_reasoning_levels".to_string(),
-        json!(DEFAULT_CODEX_REASONING_LEVELS
-            .iter()
-            .map(|(effort, description)| json!({
-                "effort": effort,
-                "description": description,
-            }))
-            .collect::<Vec<Value>>()),
+        json!(spec
+            .supported_reasoning_levels
+            .as_ref()
+            .map_or(fallback_reasoning_levels, |levels| levels.as_slice())),
     );
+    let default_reasoning_level = if let Some(supported_levels) = &spec.supported_reasoning_levels {
+        let template_default = entry_obj
+            .get("default_reasoning_level")
+            .and_then(|value| value.as_str());
+        let requested_default = spec.default_reasoning_level.as_deref();
+        let selected_default = requested_default
+            .filter(|effort| {
+                codex_reasoning_level_efforts(supported_levels).any(|item| item == *effort)
+            })
+            .or_else(|| {
+                template_default.filter(|effort| {
+                    codex_reasoning_level_efforts(supported_levels).any(|item| item == *effort)
+                })
+            })
+            .or_else(|| codex_reasoning_level_efforts(supported_levels).next());
+
+        if requested_default.is_some() && requested_default != selected_default {
+            log::warn!(
+                "Ignoring unsupported defaultReasoningLevel {:?} for model {}; using {:?}",
+                requested_default,
+                spec.model,
+                selected_default
+            );
+        }
+        selected_default.map(str::to_string)
+    } else {
+        spec.default_reasoning_level.clone()
+    };
+    if let Some(default_level) = default_reasoning_level {
+        entry_obj.insert("default_reasoning_level".to_string(), json!(default_level));
+    }
+    // Numeric mappings are model-specific. Do not inherit them from a template
+    // when the entry advertises the broader fallback set.
     entry_obj.insert(
-        "default_reasoning_level".to_string(),
-        json!(DEFAULT_CODEX_REASONING_LEVEL),
+        "reasoning_levels".to_string(),
+        spec.reasoning_levels.clone().unwrap_or(Value::Null),
     );
-    entry_obj.insert("reasoning_levels".to_string(), Value::Null);
 
     entry
 }
@@ -563,6 +620,15 @@ struct CodexCatalogModelSpec {
     /// back to the template default when absent. Only consulted for
     /// `NativeResponses`.
     base_instructions: Option<String>,
+    /// Explicit per-model reasoning effort choices. When absent, preserve the
+    /// complete capability data and localized descriptions from the template.
+    supported_reasoning_levels: Option<Vec<Value>>,
+    /// Explicit per-model default reasoning effort. When absent, preserve the
+    /// template's default.
+    default_reasoning_level: Option<String>,
+    /// Optional per-model numeric reasoning mappings. These are only carried
+    /// over when explicitly declared because they are template-specific.
+    reasoning_levels: Option<Value>,
 }
 
 fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCatalogModelSpec> {
@@ -631,6 +697,23 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
             .map(str::trim)
             .filter(|text| !text.is_empty())
             .map(str::to_string);
+        let supported_reasoning_levels = model_config
+            .get("supportedReasoningLevels")
+            .or_else(|| model_config.get("supported_reasoning_levels"))
+            .and_then(|value| value.as_array())
+            .filter(|levels| !levels.is_empty())
+            .cloned();
+        let default_reasoning_level = model_config
+            .get("defaultReasoningLevel")
+            .or_else(|| model_config.get("default_reasoning_level"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|level| !level.is_empty())
+            .map(str::to_string);
+        let reasoning_levels = model_config
+            .get("reasoningLevels")
+            .or_else(|| model_config.get("reasoning_levels"))
+            .cloned();
 
         specs.push(CodexCatalogModelSpec {
             model: model.to_string(),
@@ -639,6 +722,9 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
             supports_parallel_tool_calls,
             input_modalities,
             base_instructions,
+            supported_reasoning_levels,
+            default_reasoning_level,
+            reasoning_levels,
         });
     }
 
@@ -658,15 +744,16 @@ fn find_codex_model_template(catalog: &Value) -> Option<Value> {
         .cloned()
 }
 
-fn load_codex_model_template_from_cache() -> Result<Option<Value>, AppError> {
+fn load_codex_model_catalog_from_cache() -> Result<Option<Value>, AppError> {
     let path = get_codex_config_dir().join("models_cache.json");
     if !path.exists() {
         return Ok(None);
     }
 
-    let text = fs::read_to_string(&path).map_err(|e| AppError::io(&path, e))?;
-    let catalog: Value = serde_json::from_str(&text).map_err(|e| AppError::json(&path, e))?;
-    Ok(find_codex_model_template(&catalog))
+    let text = fs::read_to_string(&path).map_err(|error| AppError::io(&path, error))?;
+    let catalog: Value =
+        serde_json::from_str(&text).map_err(|error| AppError::json(&path, error))?;
+    Ok(Some(catalog))
 }
 
 /// Fixed candidates for locating the `codex` CLI when it is not on the process
@@ -829,7 +916,7 @@ fn codex_cli_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
+fn load_codex_model_catalog_from_bundled() -> Option<Value> {
     for candidate in codex_cli_candidates() {
         let candidate_label = candidate.to_string_lossy();
         let output = match Command::new(&candidate)
@@ -837,8 +924,8 @@ fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
             .output()
         {
             Ok(output) => output,
-            Err(err) => {
-                log::debug!("failed to run `{candidate_label} debug models --bundled`: {err}");
+            Err(error) => {
+                log::debug!("failed to run `{candidate_label} debug models --bundled`: {error}");
                 continue;
             }
         };
@@ -849,21 +936,17 @@ fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
             continue;
         }
 
-        let catalog: Value = match serde_json::from_slice(&output.stdout) {
-            Ok(catalog) => catalog,
-            Err(e) => {
+        match serde_json::from_slice(&output.stdout) {
+            Ok(catalog) => return Some(catalog),
+            Err(error) => {
                 log::debug!(
-                    "Failed to parse `{candidate_label} debug models --bundled` output: {e}"
+                    "Failed to parse `{candidate_label} debug models --bundled` output: {error}"
                 );
-                continue;
             }
-        };
-        if let Some(template) = find_codex_model_template(&catalog) {
-            return Ok(Some(template));
         }
     }
 
-    Ok(None)
+    None
 }
 
 fn load_codex_model_template_static() -> Option<Value> {
@@ -889,37 +972,141 @@ fn load_codex_native_responses_template() -> Value {
     serde_json::from_str(text).expect("bundled codex native responses template must be valid JSON")
 }
 
-fn load_codex_model_catalog_template() -> Result<Value, AppError> {
-    // ① models_cache.json (created by Codex when it connects to OpenAI)
-    if let Some(template) = load_codex_model_template_from_cache()? {
-        return Ok(template);
+fn merge_codex_reasoning_levels(
+    levels_by_effort: &mut BTreeMap<String, Value>,
+    levels: impl IntoIterator<Item = Value>,
+) {
+    for level in levels {
+        let Some(effort) = level
+            .get("effort")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty())
+        else {
+            continue;
+        };
+        levels_by_effort.entry(effort.to_string()).or_insert(level);
     }
-    // ② codex CLI (PATH + platform-specific common paths)
-    if let Some(template) = load_codex_model_template_from_bundled()? {
-        return Ok(template);
-    }
-    // ③ Static fallback bundled at compile time
-    if let Some(template) = load_codex_model_template_static() {
-        return Ok(template);
-    }
-
-    Err(AppError::Message(format!(
-        "Codex model catalog template `{CODEX_MODEL_CATALOG_TEMPLATE_SLUG}` not found. Please start Codex once so models_cache.json is available, or ensure the `codex` CLI is on PATH."
-    )))
 }
 
+fn codex_reasoning_levels_from_catalog(catalog: &Value) -> Vec<Value> {
+    catalog
+        .get("models")
+        .and_then(|models| models.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model.get("supported_reasoning_levels"))
+        .filter_map(|levels| levels.as_array())
+        .flatten()
+        .cloned()
+        .collect()
+}
+
+fn ordered_codex_reasoning_levels(levels_by_effort: BTreeMap<String, Value>) -> Vec<Value> {
+    let mut remaining = levels_by_effort;
+    let mut ordered = Vec::new();
+    for effort in CODEX_REASONING_LEVEL_ORDER {
+        if let Some(level) = remaining.remove(*effort) {
+            ordered.push(level);
+        }
+    }
+    ordered.extend(remaining.into_values());
+    ordered
+}
+
+fn fallback_codex_reasoning_levels() -> Vec<Value> {
+    let mut levels_by_effort = BTreeMap::new();
+    merge_codex_reasoning_levels(
+        &mut levels_by_effort,
+        CODEX_REASONING_LEVEL_FALLBACKS
+            .iter()
+            .map(|(effort, description)| {
+                json!({
+                    "effort": effort,
+                    "description": description,
+                })
+            }),
+    );
+    ordered_codex_reasoning_levels(levels_by_effort)
+}
+
+fn load_codex_reasoning_levels(
+    cached_catalog: Option<&Value>,
+    bundled_catalog: Option<&Value>,
+) -> Vec<Value> {
+    let mut levels_by_effort = BTreeMap::new();
+
+    // Prefer the current CLI's bundled catalog for descriptions and include the
+    // cache as an additional source because it can contain efforts from a newer
+    // account/catalog rollout. The static fallback keeps the menu usable when
+    // neither source is available.
+    if let Some(catalog) = bundled_catalog {
+        merge_codex_reasoning_levels(
+            &mut levels_by_effort,
+            codex_reasoning_levels_from_catalog(catalog),
+        );
+    }
+    if let Some(catalog) = cached_catalog {
+        merge_codex_reasoning_levels(
+            &mut levels_by_effort,
+            codex_reasoning_levels_from_catalog(catalog),
+        );
+    }
+    merge_codex_reasoning_levels(&mut levels_by_effort, fallback_codex_reasoning_levels());
+
+    ordered_codex_reasoning_levels(levels_by_effort)
+}
+
+fn load_codex_model_catalog_defaults() -> Result<(Value, Vec<Value>), AppError> {
+    let cached_catalog = load_codex_model_catalog_from_cache()?;
+    let bundled_catalog = load_codex_model_catalog_from_bundled();
+    let reasoning_levels =
+        load_codex_reasoning_levels(cached_catalog.as_ref(), bundled_catalog.as_ref());
+
+    let template = cached_catalog
+        .as_ref()
+        .and_then(find_codex_model_template)
+        .or_else(|| bundled_catalog.as_ref().and_then(find_codex_model_template))
+        .or_else(load_codex_model_template_static)
+        .ok_or_else(|| {
+            AppError::Message(format!(
+                "Codex model catalog template `{CODEX_MODEL_CATALOG_TEMPLATE_SLUG}` not found. Please start Codex once so models_cache.json is available, or ensure the `codex` CLI is on PATH."
+            ))
+        })?;
+
+    Ok((template, reasoning_levels))
+}
+
+fn codex_model_catalog_from_specs_with_reasoning_levels(
+    specs: &[CodexCatalogModelSpec],
+    template: &Value,
+    profile: CodexCatalogToolProfile,
+    fallback_reasoning_levels: &[Value],
+) -> Value {
+    let entries: Vec<Value> = specs
+        .iter()
+        .enumerate()
+        .map(|(index, spec)| {
+            codex_catalog_model_entry(template, spec, index, profile, fallback_reasoning_levels)
+        })
+        .collect();
+
+    json!({ "models": entries })
+}
+
+#[cfg(test)]
 fn codex_model_catalog_from_specs(
     specs: &[CodexCatalogModelSpec],
     template: &Value,
     profile: CodexCatalogToolProfile,
 ) -> Value {
-    let entries: Vec<Value> = specs
-        .iter()
-        .enumerate()
-        .map(|(index, spec)| codex_catalog_model_entry(template, spec, index, profile))
-        .collect();
-
-    json!({ "models": entries })
+    let fallback_reasoning_levels = fallback_codex_reasoning_levels();
+    codex_model_catalog_from_specs_with_reasoning_levels(
+        specs,
+        template,
+        profile,
+        &fallback_reasoning_levels,
+    )
 }
 
 fn codex_model_catalog_from_settings(
@@ -932,17 +1119,22 @@ fn codex_model_catalog_from_settings(
         return Ok(None);
     }
 
-    // Native providers use the bundled clean template (no freeform apply_patch,
-    // no cache dependency); proxy-chat providers keep cloning Codex's gpt-5.5
-    // entry so the proxy can rewrite custom<->function tools as before.
+    // Native providers use the bundled clean template (no freeform apply_patch);
+    // proxy-chat providers clone Codex's gpt-5.5 template so the proxy can
+    // rewrite custom<->function tools as before. Both profiles share the same
+    // full reasoning-level candidate set derived from local Codex catalogs.
+    let (proxy_template, fallback_reasoning_levels) = load_codex_model_catalog_defaults()?;
     let template = match profile {
         CodexCatalogToolProfile::NativeResponses | CodexCatalogToolProfile::Anthropic => {
             load_codex_native_responses_template()
         }
-        CodexCatalogToolProfile::ProxyChat => load_codex_model_catalog_template()?,
+        CodexCatalogToolProfile::ProxyChat => proxy_template,
     };
-    Ok(Some(codex_model_catalog_from_specs(
-        &specs, &template, profile,
+    Ok(Some(codex_model_catalog_from_specs_with_reasoning_levels(
+        &specs,
+        &template,
+        profile,
+        &fallback_reasoning_levels,
     )))
 }
 
@@ -2859,6 +3051,9 @@ base_url = "https://production.api/v1"
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
                 base_instructions: None,
+                supported_reasoning_levels: None,
+                default_reasoning_level: None,
+                reasoning_levels: None,
             },
             CodexCatalogModelSpec {
                 model: "deepseek/deepseek-v4-pro".to_string(),
@@ -2867,6 +3062,9 @@ base_url = "https://production.api/v1"
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
                 base_instructions: None,
+                supported_reasoning_levels: None,
+                default_reasoning_level: None,
+                reasoning_levels: None,
             },
             CodexCatalogModelSpec {
                 model: "glm-5.2v".to_string(),
@@ -2875,6 +3073,9 @@ base_url = "https://production.api/v1"
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
                 base_instructions: None,
+                supported_reasoning_levels: None,
+                default_reasoning_level: None,
+                reasoning_levels: None,
             },
             CodexCatalogModelSpec {
                 model: "deepseek-v4-flash".to_string(),
@@ -2883,6 +3084,9 @@ base_url = "https://production.api/v1"
                 supports_parallel_tool_calls: None,
                 input_modalities: Some(vec!["text".to_string(), "image".to_string()]),
                 base_instructions: None,
+                supported_reasoning_levels: None,
+                default_reasoning_level: None,
+                reasoning_levels: None,
             },
             CodexCatalogModelSpec {
                 model: "custom-text-alias".to_string(),
@@ -2891,6 +3095,9 @@ base_url = "https://production.api/v1"
                 supports_parallel_tool_calls: None,
                 input_modalities: Some(vec!["text".to_string()]),
                 base_instructions: None,
+                supported_reasoning_levels: None,
+                default_reasoning_level: None,
+                reasoning_levels: None,
             },
         ];
 
@@ -2962,6 +3169,9 @@ base_url = "https://production.api/v1"
             supports_parallel_tool_calls: None,
             input_modalities: None,
             base_instructions: None,
+            supported_reasoning_levels: None,
+            default_reasoning_level: None,
+            reasoning_levels: None,
         }];
         // Using a gpt-5.5-shaped template under ProxyChat must NOT strip
         // apply_patch_tool_type. (The native template lacks it, so synthesize
@@ -3521,13 +3731,25 @@ model_catalog_json = "cc-switch-model-catalog.json"
     }
 
     #[test]
-    fn catalog_model_entry_injects_default_reasoning_levels() {
+    fn catalog_model_entry_uses_full_fallback_reasoning_levels_when_unspecified() {
         let template = json!({
             "slug": "gpt-5.5",
-            "supported_reasoning_levels": null,
-            "default_reasoning_level": null,
-            "reasoning_levels": null,
+            "supported_reasoning_levels": [
+                { "effort": "low", "description": "Fast" },
+                { "effort": "xhigh", "description": "Extra high" },
+            ],
+            "default_reasoning_level": "xhigh",
+            "reasoning_levels": [{ "level": 4, "effort": "xhigh" }],
         });
+        let fallback = vec![
+            json!({ "effort": "none", "description": "No additional reasoning" }),
+            json!({ "effort": "low", "description": "Fast" }),
+            json!({ "effort": "medium", "description": "Balanced" }),
+            json!({ "effort": "high", "description": "Deep" }),
+            json!({ "effort": "xhigh", "description": "Extra high" }),
+            json!({ "effort": "max", "description": "Maximum" }),
+            json!({ "effort": "ultra", "description": "Automatic delegation" }),
+        ];
         let spec = CodexCatalogModelSpec {
             model: "test-model".to_string(),
             display_name: "Test Model".to_string(),
@@ -3535,52 +3757,156 @@ model_catalog_json = "cc-switch-model-catalog.json"
             supports_parallel_tool_calls: None,
             input_modalities: None,
             base_instructions: None,
+            supported_reasoning_levels: None,
+            default_reasoning_level: None,
+            reasoning_levels: None,
         };
-        let entry =
-            codex_catalog_model_entry(&template, &spec, 0, CodexCatalogToolProfile::ProxyChat);
+        let entry = codex_catalog_model_entry(
+            &template,
+            &spec,
+            0,
+            CodexCatalogToolProfile::ProxyChat,
+            &fallback,
+        );
 
-        let levels = entry["supported_reasoning_levels"]
-            .as_array()
-            .expect("supported_reasoning_levels should be an array");
-        assert_eq!(levels.len(), 3);
-        let efforts: Vec<_> = levels
-            .iter()
-            .filter_map(|level| level["effort"].as_str())
-            .collect();
-        assert_eq!(efforts, vec!["low", "medium", "high"]);
-        assert_eq!(entry["default_reasoning_level"].as_str(), Some("high"));
+        assert_eq!(entry["supported_reasoning_levels"], json!(fallback));
+        assert_eq!(
+            entry["default_reasoning_level"], template["default_reasoning_level"],
+            "the template still controls the initial selection"
+        );
         assert!(
             entry["reasoning_levels"].is_null(),
-            "reasoning_levels should be nulled to avoid stale template data"
+            "a broad fallback list must not inherit a GPT-specific numeric mapping"
         );
     }
 
     #[test]
-    fn catalog_model_entry_overrides_template_reasoning_levels() {
+    fn catalog_model_entry_uses_model_specific_reasoning_metadata() {
         let template = json!({
             "slug": "gpt-5.5",
-            "supported_reasoning_levels": [{ "effort": "xhigh", "description": "Extra" }],
-            "default_reasoning_level": "medium",
-            "reasoning_levels": [{ "level": 1, "effort": "low" }],
+            "supported_reasoning_levels": [{ "effort": "xhigh", "description": "Extra high" }],
+            "default_reasoning_level": "xhigh",
+            "reasoning_levels": [{ "level": 4, "effort": "xhigh" }],
         });
+        let fallback = fallback_codex_reasoning_levels();
         let spec = CodexCatalogModelSpec {
-            model: "test-model".to_string(),
-            display_name: "Test Model".to_string(),
+            model: "provider-model".to_string(),
+            display_name: "Provider Model".to_string(),
             context_window: 128_000,
             supports_parallel_tool_calls: None,
             input_modalities: None,
             base_instructions: None,
+            supported_reasoning_levels: Some(vec![
+                json!({ "effort": "minimal", "description": "Minimal reasoning" }),
+                json!({ "effort": "max", "description": "Maximum reasoning" }),
+            ]),
+            default_reasoning_level: Some("minimal".to_string()),
+            reasoning_levels: None,
         };
-        let entry =
-            codex_catalog_model_entry(&template, &spec, 0, CodexCatalogToolProfile::ProxyChat);
+        let entry = codex_catalog_model_entry(
+            &template,
+            &spec,
+            0,
+            CodexCatalogToolProfile::ProxyChat,
+            &fallback,
+        );
 
         assert_eq!(
-            entry["supported_reasoning_levels"]
-                .as_array()
-                .map(|a| a.len()),
-            Some(3)
+            entry["supported_reasoning_levels"],
+            json!([
+                { "effort": "minimal", "description": "Minimal reasoning" },
+                { "effort": "max", "description": "Maximum reasoning" },
+            ])
         );
-        assert_eq!(entry["default_reasoning_level"].as_str(), Some("high"));
-        assert!(entry["reasoning_levels"].is_null());
+        assert_eq!(entry["default_reasoning_level"], json!("minimal"));
+        assert!(
+            entry["reasoning_levels"].is_null(),
+            "a named capability override must not inherit a template-specific numeric mapping"
+        );
+    }
+
+    #[test]
+    fn catalog_model_entry_keeps_default_inside_explicit_supported_levels() {
+        let template = json!({
+            "slug": "gpt-5.5",
+            "default_reasoning_level": "xhigh",
+        });
+        let fallback = fallback_codex_reasoning_levels();
+        let spec = CodexCatalogModelSpec {
+            model: "provider-model".to_string(),
+            display_name: "Provider Model".to_string(),
+            context_window: 128_000,
+            supports_parallel_tool_calls: None,
+            input_modalities: None,
+            base_instructions: None,
+            supported_reasoning_levels: Some(vec![
+                json!({ "effort": "minimal", "description": "Minimal reasoning" }),
+                json!({ "effort": "max", "description": "Maximum reasoning" }),
+            ]),
+            default_reasoning_level: None,
+            reasoning_levels: None,
+        };
+
+        let entry = codex_catalog_model_entry(
+            &template,
+            &spec,
+            0,
+            CodexCatalogToolProfile::ProxyChat,
+            &fallback,
+        );
+
+        assert_eq!(entry["default_reasoning_level"], json!("minimal"));
+    }
+
+    #[test]
+    fn catalog_reasoning_levels_include_runtime_discoveries_and_fallbacks() {
+        let bundled_catalog = json!({
+            "models": [
+                { "supported_reasoning_levels": [{ "effort": "ultra", "description": "Ultra" }] },
+                { "supported_reasoning_levels": [{ "effort": "minimal", "description": "Minimal" }] },
+            ]
+        });
+        let mut levels_by_effort = BTreeMap::new();
+        merge_codex_reasoning_levels(
+            &mut levels_by_effort,
+            codex_reasoning_levels_from_catalog(&bundled_catalog),
+        );
+        merge_codex_reasoning_levels(&mut levels_by_effort, fallback_codex_reasoning_levels());
+        let levels = ordered_codex_reasoning_levels(levels_by_effort);
+        let efforts: Vec<_> = levels
+            .iter()
+            .filter_map(|level| level.get("effort").and_then(|value| value.as_str()))
+            .collect();
+
+        assert_eq!(
+            efforts,
+            vec!["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        );
+    }
+
+    #[test]
+    fn catalog_model_specs_read_model_specific_reasoning_metadata() {
+        let settings = json!({
+            "modelCatalog": { "models": [{
+                "model": "provider-model",
+                "supportedReasoningLevels": [{ "effort": "none", "description": "No reasoning" }],
+                "defaultReasoningLevel": "none",
+                "reasoningLevels": [{ "level": 0, "effort": "none" }],
+            }] }
+        });
+
+        let specs = codex_catalog_model_specs(&settings, "");
+        assert_eq!(specs.len(), 1);
+        assert_eq!(
+            specs[0].supported_reasoning_levels,
+            Some(vec![
+                json!({ "effort": "none", "description": "No reasoning" })
+            ])
+        );
+        assert_eq!(specs[0].default_reasoning_level.as_deref(), Some("none"));
+        assert_eq!(
+            specs[0].reasoning_levels,
+            Some(json!([{ "level": 0, "effort": "none" }]))
+        );
     }
 }
