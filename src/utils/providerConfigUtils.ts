@@ -1457,18 +1457,14 @@ export const setCodexModelName = (
 
 // ========== Codex default reasoning effort utils ==========
 
-const CODEX_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
-
-const isCodexDefaultReasoningEffort = (
-  value: string,
-): value is CodexDefaultReasoningEffort => CODEX_REASONING_EFFORTS.has(value);
-
 export const normalizeCodexDefaultReasoningEffort = (
   value: unknown,
 ): CodexDefaultReasoningEffort => {
   if (typeof value !== "string") return "high";
+  // Codex adds effort values over time. Preserve any non-empty value instead
+  // of silently coercing it to high, so a newer catalog survives a UI reload.
   const normalized = value.trim().toLowerCase();
-  return isCodexDefaultReasoningEffort(normalized) ? normalized : "high";
+  return normalized || "high";
 };
 
 const TOML_MODEL_REASONING_EFFORT_PATTERN =

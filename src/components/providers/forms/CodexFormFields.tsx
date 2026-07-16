@@ -61,13 +61,15 @@ import {
 import { CustomUserAgentField } from "./CustomUserAgentField";
 import { LocalProxyRequestOverridesField } from "./LocalProxyRequestOverridesField";
 import { cn } from "@/lib/utils";
+import { CODEX_REASONING_EFFORT_OPTIONS } from "@/types";
 import type {
   ClaudeApiKeyField,
   CodexApiFormat,
   CodexCatalogModel,
   CodexChatReasoning,
-  PromptCacheRoutingMode,
   CodexDefaultReasoningEffort,
+  CodexReasoningEffort,
+  PromptCacheRoutingMode,
   ProviderCategory,
 } from "@/types";
 
@@ -238,6 +240,15 @@ function createCatalogRow(seed?: Partial<CodexCatalogModel>): CodexCatalogRow {
     ...(seed?.baseInstructions
       ? { baseInstructions: seed.baseInstructions }
       : {}),
+    ...(seed?.supportedReasoningLevels
+      ? { supportedReasoningLevels: seed.supportedReasoningLevels }
+      : {}),
+    ...(seed?.defaultReasoningLevel
+      ? { defaultReasoningLevel: seed.defaultReasoningLevel }
+      : {}),
+    ...(seed?.reasoningLevels !== undefined
+      ? { reasoningLevels: seed.reasoningLevels }
+      : {}),
   };
 }
 
@@ -252,6 +263,50 @@ const catalogInputModalitiesForMode = (
   mode: string,
 ): CodexCatalogModel["inputModalities"] =>
   mode === "text-image" ? ["text", "image"] : ["text"];
+
+const normalizeCatalogReasoningLevels = (
+  levels?: CodexCatalogModel["supportedReasoningLevels"],
+): NonNullable<CodexCatalogModel["supportedReasoningLevels"]> => {
+  const seen = new Set<string>();
+  const normalized: NonNullable<CodexCatalogModel["supportedReasoningLevels"]> =
+    [];
+  for (const level of levels ?? []) {
+    const effort =
+      typeof level?.effort === "string"
+        ? level.effort.trim().toLowerCase()
+        : "";
+    if (!effort || seen.has(effort)) continue;
+    seen.add(effort);
+    const description =
+      typeof level.description === "string" ? level.description.trim() : "";
+    normalized.push({ effort, ...(description ? { description } : {}) });
+  }
+  return normalized;
+};
+
+const catalogReasoningEfforts = (row: CodexCatalogModel): string[] =>
+  normalizeCatalogReasoningLevels(row.supportedReasoningLevels).map(
+    (level) => level.effort,
+  );
+
+const knownReasoningEffortsForRow = (row: CodexCatalogModel): string[] => {
+  const explicit = catalogReasoningEfforts(row);
+  return Array.from(new Set([...CODEX_REASONING_EFFORT_OPTIONS, ...explicit]));
+};
+
+const reasoningEffortLabel = (effort: string): string => {
+  const labels: Record<string, string> = {
+    none: "None",
+    minimal: "Minimal",
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    xhigh: "XHigh",
+    max: "Max",
+    ultra: "Ultra",
+  };
+  return labels[effort] ?? effort;
+};
 
 // Compares rows (with rowId) to incoming models (without) by data fields only,
 // so both sync effects can use the same equality definition. Hidden native-profile
@@ -273,7 +328,17 @@ function catalogRowsMatchModels(
         (incoming.supportsParallelToolCalls ?? null) &&
       (row.baseInstructions ?? "") === (incoming.baseInstructions ?? "") &&
       JSON.stringify(row.inputModalities ?? []) ===
-        JSON.stringify(incoming.inputModalities ?? [])
+        JSON.stringify(incoming.inputModalities ?? []) &&
+      JSON.stringify(
+        normalizeCatalogReasoningLevels(row.supportedReasoningLevels),
+      ) ===
+        JSON.stringify(
+          normalizeCatalogReasoningLevels(incoming.supportedReasoningLevels),
+        ) &&
+      (row.defaultReasoningLevel ?? "") ===
+        (incoming.defaultReasoningLevel ?? "") &&
+      JSON.stringify(row.reasoningLevels ?? null) ===
+        JSON.stringify(incoming.reasoningLevels ?? null)
     );
   });
 }
@@ -406,6 +471,45 @@ export function CodexFormFields({
   const [catalogRows, setCatalogRows] = useState<CodexCatalogRow[]>(() =>
     catalogModels.map((m) => createCatalogRow(m)),
   );
+
+  const explicitDefaultModelReasoningEfforts = useMemo(() => {
+    const defaultModel = codexModel.trim();
+    if (!defaultModel) return [];
+    const matchingRow = catalogRows.find(
+      (row) => row.model.trim() === defaultModel,
+    );
+    return matchingRow ? catalogReasoningEfforts(matchingRow) : [];
+  }, [catalogRows, codexModel]);
+
+  const defaultReasoningEffortOptions = useMemo(() => {
+    const options =
+      explicitDefaultModelReasoningEfforts.length > 0
+        ? explicitDefaultModelReasoningEfforts
+        : [...CODEX_REASONING_EFFORT_OPTIONS];
+    return options.includes(codexDefaultReasoningEffort)
+      ? options
+      : [codexDefaultReasoningEffort, ...options];
+  }, [codexDefaultReasoningEffort, explicitDefaultModelReasoningEfforts]);
+
+  // An explicitly declared model capability is a hard constraint for the
+  // configured default model as well. Keep the global setting valid when the
+  // model or its declared support changes.
+  useEffect(() => {
+    if (
+      !onCodexDefaultReasoningEffortChange ||
+      explicitDefaultModelReasoningEfforts.length === 0 ||
+      explicitDefaultModelReasoningEfforts.includes(codexDefaultReasoningEffort)
+    ) {
+      return;
+    }
+    onCodexDefaultReasoningEffortChange(
+      explicitDefaultModelReasoningEfforts[0] as CodexDefaultReasoningEffort,
+    );
+  }, [
+    codexDefaultReasoningEffort,
+    explicitDefaultModelReasoningEfforts,
+    onCodexDefaultReasoningEffortChange,
+  ]);
 
   // 记录上次发送给父组件的数据，避免重复触发
   const lastSentModelsRef = useRef<CodexCatalogModel[]>(catalogModels);
@@ -925,21 +1029,11 @@ export function CodexFormFields({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="low">
-                      {t("codexConfig.defaultReasoningEffortLow", {
-                        defaultValue: "Low",
-                      })}
-                    </SelectItem>
-                    <SelectItem value="medium">
-                      {t("codexConfig.defaultReasoningEffortMedium", {
-                        defaultValue: "Medium",
-                      })}
-                    </SelectItem>
-                    <SelectItem value="high">
-                      {t("codexConfig.defaultReasoningEffortHigh", {
-                        defaultValue: "High",
-                      })}
-                    </SelectItem>
+                    {defaultReasoningEffortOptions.map((effort) => (
+                      <SelectItem key={effort} value={effort}>
+                        {reasoningEffortLabel(effort)}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
                 <p className="text-xs leading-relaxed text-muted-foreground">
@@ -1298,6 +1392,189 @@ export function CodexFormFields({
                               >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
+                              <div className="space-y-2 rounded-md border border-border-default bg-muted/20 p-2 md:col-span-5">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div>
+                                    <p className="text-xs font-medium">
+                                      {t("codexConfig.catalogReasoningTitle", {
+                                        defaultValue: "模型推理能力",
+                                      })}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {t("codexConfig.catalogReasoningHint", {
+                                        defaultValue:
+                                          "自动模式显示 Codex 已知的完整等级；显式模式只声明当前模型支持的等级。",
+                                      })}
+                                    </p>
+                                  </div>
+                                  <Select
+                                    value={
+                                      catalogReasoningEfforts(row).length > 0
+                                        ? "explicit"
+                                        : "automatic"
+                                    }
+                                    onValueChange={(value) => {
+                                      if (value === "automatic") {
+                                        handleUpdateCatalogRow(index, {
+                                          supportedReasoningLevels: undefined,
+                                          defaultReasoningLevel: undefined,
+                                        });
+                                        return;
+                                      }
+                                      const levels =
+                                        CODEX_REASONING_EFFORT_OPTIONS.map(
+                                          (effort) => ({ effort }),
+                                        );
+                                      handleUpdateCatalogRow(index, {
+                                        supportedReasoningLevels: levels,
+                                        defaultReasoningLevel: levels[0]
+                                          .effort as CodexReasoningEffort,
+                                      });
+                                    }}
+                                  >
+                                    <SelectTrigger
+                                      className="w-[150px]"
+                                      aria-label={t(
+                                        "codexConfig.catalogReasoningMode",
+                                        { defaultValue: "推理能力模式" },
+                                      )}
+                                    >
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="automatic">
+                                        {t(
+                                          "codexConfig.catalogReasoningAutomatic",
+                                          {
+                                            defaultValue: "自动（完整等级）",
+                                          },
+                                        )}
+                                      </SelectItem>
+                                      <SelectItem value="explicit">
+                                        {t(
+                                          "codexConfig.catalogReasoningExplicit",
+                                          {
+                                            defaultValue: "显式限制",
+                                          },
+                                        )}
+                                      </SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                {catalogReasoningEfforts(row).length > 0 && (
+                                  <>
+                                    <div
+                                      className="flex flex-wrap gap-1"
+                                      role="group"
+                                      aria-label={t(
+                                        "codexConfig.catalogSupportedReasoningLevels",
+                                        { defaultValue: "支持的推理等级" },
+                                      )}
+                                    >
+                                      {knownReasoningEffortsForRow(row).map(
+                                        (effort) => {
+                                          const selected =
+                                            catalogReasoningEfforts(
+                                              row,
+                                            ).includes(effort);
+                                          return (
+                                            <Button
+                                              key={effort}
+                                              type="button"
+                                              variant={
+                                                selected ? "default" : "outline"
+                                              }
+                                              size="sm"
+                                              className="h-7 px-2 text-xs"
+                                              onClick={() => {
+                                                const current =
+                                                  normalizeCatalogReasoningLevels(
+                                                    row.supportedReasoningLevels,
+                                                  );
+                                                const next = selected
+                                                  ? current.filter(
+                                                      (level) =>
+                                                        level.effort !== effort,
+                                                    )
+                                                  : [...current, { effort }];
+                                                // Empty has the same meaning as
+                                                // automatic. Require an explicit
+                                                // model declaration to contain at
+                                                // least one selectable effort.
+                                                if (next.length === 0) return;
+                                                const nextDefault = next.some(
+                                                  (level) =>
+                                                    level.effort ===
+                                                    row.defaultReasoningLevel,
+                                                )
+                                                  ? row.defaultReasoningLevel
+                                                  : next[0].effort;
+                                                handleUpdateCatalogRow(index, {
+                                                  supportedReasoningLevels:
+                                                    next,
+                                                  defaultReasoningLevel:
+                                                    nextDefault as CodexReasoningEffort,
+                                                });
+                                              }}
+                                            >
+                                              {reasoningEffortLabel(effort)}
+                                            </Button>
+                                          );
+                                        },
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs text-muted-foreground">
+                                        {t(
+                                          "codexConfig.catalogDefaultReasoningLevel",
+                                          {
+                                            defaultValue: "模型默认等级",
+                                          },
+                                        )}
+                                      </span>
+                                      <Select
+                                        value={
+                                          row.defaultReasoningLevel ??
+                                          "__catalog_default"
+                                        }
+                                        onValueChange={(value) =>
+                                          handleUpdateCatalogRow(index, {
+                                            defaultReasoningLevel:
+                                              value === "__catalog_default"
+                                                ? undefined
+                                                : (value as CodexReasoningEffort),
+                                          })
+                                        }
+                                      >
+                                        <SelectTrigger className="w-[150px]">
+                                          <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          <SelectItem value="__catalog_default">
+                                            {t(
+                                              "codexConfig.catalogDefaultAutomatic",
+                                              {
+                                                defaultValue:
+                                                  "使用 Codex 默认值",
+                                              },
+                                            )}
+                                          </SelectItem>
+                                          {catalogReasoningEfforts(row).map(
+                                            (effort) => (
+                                              <SelectItem
+                                                key={effort}
+                                                value={effort}
+                                              >
+                                                {reasoningEffortLabel(effort)}
+                                              </SelectItem>
+                                            ),
+                                          )}
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
                             </SortableCatalogRow>
                           ))}
                         </SortableContext>

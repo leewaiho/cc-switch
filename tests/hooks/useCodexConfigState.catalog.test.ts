@@ -23,6 +23,12 @@ describe("useCodexConfigState catalog load", () => {
               supportsParallelToolCalls: true,
               inputModalities: ["text", "image"],
               baseInstructions: "You are Codex, based on MiniMax-M3.",
+              supportedReasoningLevels: [
+                { effort: "minimal", description: "Minimal reasoning" },
+                { effort: "max", description: "Maximum reasoning" },
+              ],
+              defaultReasoningLevel: "max",
+              reasoningLevels: [{ level: 6, effort: "max" }],
             },
           ],
         },
@@ -39,6 +45,12 @@ describe("useCodexConfigState catalog load", () => {
         supportsParallelToolCalls: true,
         inputModalities: ["text", "image"],
         baseInstructions: "You are Codex, based on MiniMax-M3.",
+        supportedReasoningLevels: [
+          { effort: "minimal", description: "Minimal reasoning" },
+          { effort: "max", description: "Maximum reasoning" },
+        ],
+        defaultReasoningLevel: "max",
+        reasoningLevels: [{ level: 6, effort: "max" }],
       },
     ]);
   });
@@ -57,6 +69,12 @@ describe("useCodexConfigState catalog load", () => {
               supports_parallel_tool_calls: false,
               input_modalities: ["text"],
               base_instructions: "You are MiMo, developed by Xiaomi.",
+              supported_reasoning_levels: [
+                { effort: "none", description: "No reasoning" },
+                { effort: "ultra", description: "Ultra" },
+              ],
+              default_reasoning_level: "ultra",
+              reasoning_levels: [{ level: 7, effort: "ultra" }],
             },
           ],
         },
@@ -73,6 +91,12 @@ describe("useCodexConfigState catalog load", () => {
         supportsParallelToolCalls: false,
         inputModalities: ["text"],
         baseInstructions: "You are MiMo, developed by Xiaomi.",
+        supportedReasoningLevels: [
+          { effort: "none", description: "No reasoning" },
+          { effort: "ultra", description: "Ultra" },
+        ],
+        defaultReasoningLevel: "ultra",
+        reasoningLevels: [{ level: 7, effort: "ultra" }],
       },
     ]);
   });
