@@ -71,4 +71,30 @@ describe("ProviderForm Codex catalog helpers", () => {
       { model: "mimo-v2.5-pro", supportsParallelToolCalls: false },
     ]);
   });
+
+  it("preserves explicit model reasoning capabilities and rejects an unsupported model default", () => {
+    expect(
+      normalizeCodexCatalogModelsForSave([
+        {
+          model: "provider-model",
+          supportedReasoningLevels: [
+            { effort: "minimal", description: "Minimal" },
+            { effort: "max", description: "Maximum" },
+            { effort: "max", description: "Duplicate" },
+          ],
+          defaultReasoningLevel: "xhigh",
+          reasoningLevels: [{ level: 6, effort: "max" }],
+        },
+      ]),
+    ).toEqual([
+      {
+        model: "provider-model",
+        supportedReasoningLevels: [
+          { effort: "minimal", description: "Minimal" },
+          { effort: "max", description: "Maximum" },
+        ],
+        reasoningLevels: [{ level: 6, effort: "max" }],
+      },
+    ]);
+  });
 });

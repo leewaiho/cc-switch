@@ -1207,9 +1207,13 @@ pub fn read_codex_model_catalog_simplified_from_live() -> Result<Option<Value>, 
     let Ok(catalog_text) = fs::read_to_string(&catalog_path) else {
         return Ok(None);
     };
+    let automatic_reasoning_levels = load_codex_model_catalog_defaults()
+        .map(|(_, levels)| levels)
+        .unwrap_or_else(|_| fallback_codex_reasoning_levels());
     Ok(build_simplified_catalog_from_texts(
         &config_text,
         &catalog_text,
+        Some(&automatic_reasoning_levels),
     ))
 }
 
@@ -1247,7 +1251,16 @@ pub(crate) fn resolve_cc_switch_catalog_path(
 /// Pure reverse-parsing core: convert Codex catalog JSON text back into the
 /// frontend's simplified model-mapping shape. Returns `None` when the catalog
 /// is unparseable, has no `models` array, or yields zero valid entries.
-fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) -> Option<Value> {
+///
+/// `automatic_reasoning_levels` is the current full fallback candidate set. A
+/// generated entry whose efforts match that set is projected back as automatic
+/// (no explicit `supportedReasoningLevels`) so it continues to discover future
+/// Codex efforts on later saves.
+fn build_simplified_catalog_from_texts(
+    config_text: &str,
+    catalog_text: &str,
+    automatic_reasoning_levels: Option<&[Value]>,
+) -> Option<Value> {
     let catalog: Value = serde_json::from_str(catalog_text).ok()?;
     let models = catalog.get("models").and_then(|m| m.as_array())?;
 
@@ -1302,6 +1315,42 @@ fn build_simplified_catalog_from_texts(config_text: &str, catalog_text: &str) ->
             let inferred = codex_catalog_input_modalities(model, None);
             if !mods.is_empty() && mods != inferred {
                 obj.insert("inputModalities".to_string(), json!(mods));
+            }
+        }
+
+        let supported_reasoning_levels = entry
+            .get("supported_reasoning_levels")
+            .and_then(|value| value.as_array());
+        let automatic_efforts = automatic_reasoning_levels.map(|levels| {
+            codex_reasoning_level_efforts(levels)
+                .map(str::to_string)
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+        let declared_efforts = supported_reasoning_levels.map(|levels| {
+            codex_reasoning_level_efforts(levels)
+                .map(str::to_string)
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+        let is_automatic_reasoning = matches!(
+            (&automatic_efforts, &declared_efforts),
+            (Some(automatic), Some(declared)) if !declared.is_empty() && automatic == declared
+        );
+
+        if let Some(levels) = supported_reasoning_levels.filter(|_| !is_automatic_reasoning) {
+            obj.insert("supportedReasoningLevels".to_string(), json!(levels));
+            if let Some(default_level) = entry
+                .get("default_reasoning_level")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                obj.insert("defaultReasoningLevel".to_string(), json!(default_level));
+            }
+            if let Some(reasoning_levels) = entry
+                .get("reasoning_levels")
+                .filter(|value| !value.is_null())
+            {
+                obj.insert("reasoningLevels".to_string(), reasoning_levels.clone());
             }
         }
 
@@ -3450,7 +3499,8 @@ web_search = "disabled"
                 { "slug": "deepseek-v4-flash", "display_name": "DeepSeek Flash", "context_window": 1000000 }
             ]
         }"#;
-        let result = build_simplified_catalog_from_texts(config, catalog).expect("entries found");
+        let result =
+            build_simplified_catalog_from_texts(config, catalog, None).expect("entries found");
         let models = result
             .get("models")
             .and_then(|m| m.as_array())
@@ -3482,7 +3532,7 @@ web_search = "disabled"
         let catalog = r#"{
             "models": [{ "slug": "kimi", "display_name": "kimi", "context_window": 128000 }]
         }"#;
-        let result = build_simplified_catalog_from_texts("", catalog).expect("entry");
+        let result = build_simplified_catalog_from_texts("", catalog, None).expect("entry");
         let entry = &result.get("models").unwrap().as_array().unwrap()[0];
         assert!(
             entry.get("contextWindow").is_none(),
@@ -3501,7 +3551,7 @@ web_search = "disabled"
                 { "slug": "b", "display_name": "b", "context_window": 500000 }
             ]
         }"#;
-        let result = build_simplified_catalog_from_texts(config, catalog).expect("entries");
+        let result = build_simplified_catalog_from_texts(config, catalog, None).expect("entries");
         let models = result.get("models").unwrap().as_array().unwrap();
         // Matches default → squashed.
         assert!(models[0].get("contextWindow").is_none());
@@ -3523,7 +3573,7 @@ web_search = "disabled"
             ]
         }"#;
 
-        let result = build_simplified_catalog_from_texts("", catalog).expect("entries");
+        let result = build_simplified_catalog_from_texts("", catalog, None).expect("entries");
         let models = result.get("models").unwrap().as_array().unwrap();
 
         assert!(
@@ -3547,17 +3597,91 @@ web_search = "disabled"
     }
 
     #[test]
+    fn build_simplified_catalog_round_trips_explicit_reasoning_capabilities() {
+        let catalog = r#"{
+            "models": [{
+                "slug": "provider-model",
+                "display_name": "Provider Model",
+                "context_window": 128000,
+                "supported_reasoning_levels": [
+                    { "effort": "minimal", "description": "Minimal reasoning" },
+                    { "effort": "max", "description": "Maximum reasoning" }
+                ],
+                "default_reasoning_level": "max",
+                "reasoning_levels": [{ "level": 6, "effort": "max" }]
+            }]
+        }"#;
+        let automatic = vec![
+            json!({ "effort": "none" }),
+            json!({ "effort": "low" }),
+            json!({ "effort": "medium" }),
+            json!({ "effort": "high" }),
+            json!({ "effort": "xhigh" }),
+            json!({ "effort": "max" }),
+            json!({ "effort": "ultra" }),
+        ];
+
+        let result =
+            build_simplified_catalog_from_texts("", catalog, Some(&automatic)).expect("entry");
+        let entry = &result["models"][0];
+        assert_eq!(entry["defaultReasoningLevel"], json!("max"));
+        assert_eq!(
+            entry["supportedReasoningLevels"],
+            json!([
+                { "effort": "minimal", "description": "Minimal reasoning" },
+                { "effort": "max", "description": "Maximum reasoning" }
+            ])
+        );
+        assert_eq!(
+            entry["reasoningLevels"],
+            json!([{ "level": 6, "effort": "max" }])
+        );
+    }
+
+    #[test]
+    fn build_simplified_catalog_keeps_matching_reasoning_levels_automatic() {
+        let automatic = vec![
+            json!({ "effort": "none" }),
+            json!({ "effort": "low" }),
+            json!({ "effort": "medium" }),
+            json!({ "effort": "high" }),
+            json!({ "effort": "xhigh" }),
+            json!({ "effort": "max" }),
+            json!({ "effort": "ultra" }),
+        ];
+        let catalog = json!({
+            "models": [{
+                "slug": "automatic-model",
+                "display_name": "automatic-model",
+                "context_window": 128000,
+                "supported_reasoning_levels": automatic,
+                "default_reasoning_level": "high",
+                "reasoning_levels": null
+            }]
+        })
+        .to_string();
+
+        let result =
+            build_simplified_catalog_from_texts("", &catalog, Some(&automatic)).expect("entry");
+        let entry = &result["models"][0];
+        assert!(entry.get("supportedReasoningLevels").is_none());
+        assert!(entry.get("defaultReasoningLevel").is_none());
+        assert!(entry.get("reasoningLevels").is_none());
+    }
+
+    #[test]
     fn build_simplified_catalog_returns_none_when_unparseable() {
-        assert!(build_simplified_catalog_from_texts("", "not json").is_none());
-        assert!(build_simplified_catalog_from_texts("", "{}").is_none());
+        assert!(build_simplified_catalog_from_texts("", "not json", None).is_none());
+        assert!(build_simplified_catalog_from_texts("", "{}", None).is_none());
         assert!(
-            build_simplified_catalog_from_texts("", r#"{"models": []}"#).is_none(),
+            build_simplified_catalog_from_texts("", r#"{"models": []}"#, None).is_none(),
             "empty models array should yield None so the field is not inserted at all"
         );
         assert!(
             build_simplified_catalog_from_texts(
                 "",
                 r#"{"models": [{"display_name": "no slug"}]}"#,
+                None,
             )
             .is_none(),
             "entries lacking slug are skipped; a fully-skipped catalog yields None"

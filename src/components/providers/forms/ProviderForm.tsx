@@ -136,6 +136,31 @@ type PresetEntry = {
     | HermesProviderPreset;
 };
 
+const normalizeCodexSupportedReasoningLevels = (
+  value: CodexCatalogModel["supportedReasoningLevels"],
+) => {
+  if (!Array.isArray(value)) return undefined;
+
+  const seen = new Set<string>();
+  const levels = value.flatMap((item) => {
+    const effort =
+      typeof item?.effort === "string" ? item.effort.trim().toLowerCase() : "";
+    if (!effort || seen.has(effort)) return [];
+    seen.add(effort);
+
+    const description =
+      typeof item.description === "string" ? item.description.trim() : "";
+    return [
+      {
+        effort,
+        ...(description ? { description } : {}),
+      },
+    ];
+  });
+
+  return levels.length > 0 ? levels : undefined;
+};
+
 export const normalizeCodexCatalogModelsForSave = (
   models: CodexCatalogModel[],
 ): CodexCatalogModel[] => {
@@ -169,6 +194,18 @@ export const normalizeCodexCatalogModelsForSave = (
     }, []);
 
     const baseInstructions = item.baseInstructions?.trim();
+    const supportedReasoningLevels = normalizeCodexSupportedReasoningLevels(
+      item.supportedReasoningLevels,
+    );
+    const requestedDefaultReasoningLevel =
+      typeof item.defaultReasoningLevel === "string"
+        ? item.defaultReasoningLevel.trim().toLowerCase()
+        : "";
+    const defaultReasoningLevel = supportedReasoningLevels?.some(
+      (level) => level.effort === requestedDefaultReasoningLevel,
+    )
+      ? requestedDefaultReasoningLevel
+      : undefined;
 
     normalized.push({
       model,
@@ -182,6 +219,11 @@ export const normalizeCodexCatalogModelsForSave = (
         ? { inputModalities }
         : {}),
       ...(baseInstructions ? { baseInstructions } : {}),
+      ...(supportedReasoningLevels ? { supportedReasoningLevels } : {}),
+      ...(defaultReasoningLevel ? { defaultReasoningLevel } : {}),
+      ...(item.reasoningLevels !== undefined
+        ? { reasoningLevels: item.reasoningLevels }
+        : {}),
     });
   }
 

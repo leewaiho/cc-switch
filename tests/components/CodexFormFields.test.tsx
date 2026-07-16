@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { FormProvider, useForm } from "react-hook-form";
@@ -83,8 +83,27 @@ describe("CodexFormFields", () => {
     });
 
     await user.click(screen.getByRole("combobox", { name: "默认推理级别" }));
-    await user.click(await screen.findByRole("option", { name: "Medium" }));
+    await user.click(await screen.findByRole("option", { name: "XHigh" }));
 
-    expect(onChange).toHaveBeenCalledWith("medium");
+    expect(onChange).toHaveBeenCalledWith("xhigh");
+  });
+
+  it("constrains the global default to the selected model's explicit levels", async () => {
+    const onChange = vi.fn<(value: CodexDefaultReasoningEffort) => void>();
+
+    renderCodexFormFields({
+      codexModel: "provider-model",
+      codexDefaultReasoningEffort: "high",
+      onCodexDefaultReasoningEffortChange: onChange,
+      catalogModels: [
+        {
+          model: "provider-model",
+          supportedReasoningLevels: [{ effort: "minimal" }, { effort: "max" }],
+        },
+      ],
+      onCatalogModelsChange: noop,
+    });
+
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith("minimal"));
   });
 });

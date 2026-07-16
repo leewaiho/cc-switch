@@ -224,11 +224,19 @@ describe("Codex TOML utils", () => {
     );
   });
 
-  it("defaults invalid or missing Codex default reasoning effort to high", () => {
+  it("defaults missing effort to high while preserving supported and future values", () => {
     expect(extractCodexDefaultReasoningEffort('model = "x"')).toBe("high");
     expect(
       extractCodexDefaultReasoningEffort('model_reasoning_effort = "max"'),
-    ).toBe("high");
+    ).toBe("max");
+    expect(
+      extractCodexDefaultReasoningEffort('model_reasoning_effort = "xhigh"'),
+    ).toBe("xhigh");
+    expect(
+      extractCodexDefaultReasoningEffort(
+        'model_reasoning_effort = "future-effort"',
+      ),
+    ).toBe("future-effort");
   });
 
   it("reads, writes, and removes top-level integer metadata fields", () => {

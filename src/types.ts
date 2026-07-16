@@ -144,7 +144,29 @@ export type CodexChatEffortValueMode =
   // OpenRouter effort 枚举 xhigh|high|medium|low|minimal（无 max，max 钳到 xhigh）
   | "openrouter";
 
-export type CodexDefaultReasoningEffort = "low" | "medium" | "high";
+export const CODEX_REASONING_EFFORT_OPTIONS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+
+// Keep the known Codex values discoverable in editor autocomplete while allowing
+// catalogs from a newer Codex release to round-trip without data loss.
+export type CodexReasoningEffort =
+  | (typeof CODEX_REASONING_EFFORT_OPTIONS)[number]
+  | (string & {});
+
+export type CodexDefaultReasoningEffort = CodexReasoningEffort;
+
+export interface CodexSupportedReasoningLevel {
+  effort: CodexReasoningEffort;
+  description?: string;
+}
 
 export type CodexChatReasoningOutputFormat =
   | "auto"
@@ -271,6 +293,15 @@ export interface CodexCatalogModel {
   // Codex requires this field in every catalog entry; when omitted the backend
   // falls back to a neutral default. e.g. MiMo "developed by Xiaomi".
   baseInstructions?: string;
+  // Omit supportedReasoningLevels for automatic capability discovery. When it
+  // is present, only these efforts are advertised for this model.
+  supportedReasoningLevels?: CodexSupportedReasoningLevel[];
+  // Optional model-catalog default. It must be one of supportedReasoningLevels
+  // when an explicit list is provided.
+  defaultReasoningLevel?: CodexReasoningEffort;
+  // Legacy/model-specific numeric mapping. Current Codex bundled catalogs use
+  // null, but retain an existing value during load -> save.
+  reasoningLevels?: unknown;
 }
 
 // Claude 认证字段类型
