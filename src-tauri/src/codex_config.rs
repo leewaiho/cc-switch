@@ -556,41 +556,37 @@ fn codex_catalog_model_entry(
     let supported_reasoning_levels = spec
         .supported_reasoning_levels
         .clone()
-        .or_else(|| documented_codex_reasoning_levels(&spec.model));
+        .or_else(|| documented_codex_reasoning_levels(&spec.model))
+        .unwrap_or_else(fallback_codex_reasoning_levels);
     entry_obj.insert(
         "supported_reasoning_levels".to_string(),
-        supported_reasoning_levels
-            .as_ref()
-            .map_or(Value::Null, |levels| json!(levels)),
+        json!(supported_reasoning_levels),
     );
-    let default_reasoning_level = if let Some(supported_levels) = &supported_reasoning_levels {
-        let template_default = entry_obj
-            .get("default_reasoning_level")
-            .and_then(|value| value.as_str());
-        let requested_default = spec.default_reasoning_level.as_deref();
-        let selected_default = requested_default
-            .filter(|effort| {
+    let supported_levels = &supported_reasoning_levels;
+    let template_default = entry_obj
+        .get("default_reasoning_level")
+        .and_then(|value| value.as_str());
+    let requested_default = spec.default_reasoning_level.as_deref();
+    let selected_default = requested_default
+        .filter(|effort| {
+            codex_reasoning_level_efforts(supported_levels).any(|item| item == *effort)
+        })
+        .or_else(|| {
+            template_default.filter(|effort| {
                 codex_reasoning_level_efforts(supported_levels).any(|item| item == *effort)
             })
-            .or_else(|| {
-                template_default.filter(|effort| {
-                    codex_reasoning_level_efforts(supported_levels).any(|item| item == *effort)
-                })
-            })
-            .or_else(|| codex_reasoning_level_efforts(supported_levels).next());
+        })
+        .or_else(|| codex_reasoning_level_efforts(supported_levels).next());
 
-        if requested_default.is_some() && requested_default != selected_default {
-            log::warn!(
-                "Ignoring unsupported defaultReasoningLevel {:?} for model {}; using {:?}",
-                requested_default,
-                spec.model,
-                selected_default
-            );
-        }
-        selected_default.map(str::to_string)
-    } else {
-        spec.default_reasoning_level.clone()
-    };
+    if requested_default.is_some() && requested_default != selected_default {
+        log::warn!(
+            "Ignoring unsupported defaultReasoningLevel {:?} for model {}; using {:?}",
+            requested_default,
+            spec.model,
+            selected_default
+        );
+    }
+    let default_reasoning_level = selected_default.map(str::to_string);
     if let Some(default_level) = default_reasoning_level {
         entry_obj.insert("default_reasoning_level".to_string(), json!(default_level));
     }
@@ -3960,9 +3956,19 @@ model_catalog_json = "cc-switch-model-catalog.json"
         let entry =
             codex_catalog_model_entry(&template, &spec, 0, CodexCatalogToolProfile::ProxyChat);
 
+        // Unspecified models receive the full fallback set so the catalog
+        // never serializes `supported_reasoning_levels: null`, which the
+        // Codex / ChatGPT Desktop parser rejects.
+        let levels = entry["supported_reasoning_levels"]
+            .as_array()
+            .expect("supported_reasoning_levels must always be an array");
         assert!(
-            entry["supported_reasoning_levels"].is_null(),
-            "an unspecified model must remain in automatic capability mode"
+            !levels.is_empty(),
+            "an unspecified model must still get the fallback reasoning levels"
+        );
+        assert!(
+            levels.iter().all(|lvl| lvl.get("description").is_some()),
+            "every fallback level must carry a description"
         );
         assert_eq!(
             entry["default_reasoning_level"], template["default_reasoning_level"],
