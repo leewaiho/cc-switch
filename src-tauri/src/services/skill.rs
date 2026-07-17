@@ -1670,6 +1670,7 @@ impl SkillService {
     /// 将 `\\wsl$\\<distro>\\...` 或 `\\wsl.localhost\\<distro>\\...` 解析为发行版和 POSIX 路径。
     ///
     /// 不使用 `Path::components`，以便该解析器可以在非 Windows 单元测试中覆盖。
+    #[cfg(any(windows, test))]
     fn parse_wsl_unc_path(path: &Path) -> Option<(String, PathBuf)> {
         let mut normalized = path.to_string_lossy().replace('\\', "/");
         if let Some(rest) = normalized.strip_prefix("//?/UNC/") {
@@ -1687,6 +1688,7 @@ impl SkillService {
     }
 
     /// 将 Windows 本地绝对路径映射为同机 WSL 可见的 `/mnt/<drive>/...` 路径。
+    #[cfg(any(windows, test))]
     fn windows_path_to_wsl_mount(path: &Path) -> Option<PathBuf> {
         let normalized = path.to_string_lossy().replace('\\', "/");
         let bytes = normalized.as_bytes();
