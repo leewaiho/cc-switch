@@ -1051,10 +1051,21 @@ fn documented_codex_reasoning_levels(model: &str) -> Option<Vec<Value>> {
         _ => return None,
     };
 
+    // Each level must carry a `description` field; the Codex / ChatGPT
+    // Desktop catalog consumer rejects entries without it. Reuse the
+    // fallback descriptions so the wording stays consistent, and supply
+    // a description for `minimal` which only GLM exposes today.
     Some(
         effort_names
             .iter()
-            .map(|effort| json!({ "effort": effort }))
+            .map(|effort| {
+                let description = CODEX_REASONING_LEVEL_FALLBACKS
+                    .iter()
+                    .find(|(name, _)| *name == *effort)
+                    .map(|(_, desc)| *desc)
+                    .unwrap_or("Minimal reasoning for trivial tasks");
+                json!({ "effort": effort, "description": description })
+            })
             .collect(),
     )
 }
