@@ -7,6 +7,7 @@ use crate::config::{
 };
 use crate::error::AppError;
 use crate::model_capabilities::{image_input_capability_from_modalities, ImageInputCapability};
+#[cfg(test)]
 use once_cell::sync::OnceCell;
 use serde_json::{json, Value};
 use std::fs;
@@ -24,14 +25,6 @@ const CODEX_PROXY_AUTH_PLACEHOLDER: &str = "PROXY_MANAGED";
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-// Generating a ProxyChat catalog only needs one stable Codex model template per
-// process. Without this cache every provider switch/takeover can start the
-// Codex CLI again, which is especially expensive for npm-installed `codex.cmd`
-// on Windows. Tests deliberately bypass the global cache because they isolate
-// CODEX_HOME and seed different model templates.
-#[cfg(not(test))]
-static CODEX_MODEL_CATALOG_TEMPLATE_CACHE: OnceCell<Value> = OnceCell::new();
 
 /// Top-level `config.toml` key that controls Codex's built-in web-search tool.
 pub(crate) const CODEX_WEB_SEARCH_FIELD: &str = "web_search";
@@ -785,12 +778,6 @@ fn load_codex_model_catalog_from_cache() -> Result<Option<Value>, AppError> {
     Ok(Some(catalog))
 }
 
-fn load_codex_model_template_from_cache() -> Result<Option<Value>, AppError> {
-    Ok(load_codex_model_catalog_from_cache()?
-        .as_ref()
-        .and_then(find_codex_model_template))
-}
-
 /// Fixed candidates for locating the `codex` CLI when it is not on the process
 /// PATH (common in GUI apps launched outside a terminal).
 const CODEX_CLI_FIXED_CANDIDATES: &[&str] = &[
@@ -999,12 +986,6 @@ fn load_codex_model_catalog_from_bundled() -> Option<Value> {
     None
 }
 
-fn load_codex_model_template_from_bundled() -> Result<Option<Value>, AppError> {
-    Ok(load_codex_model_catalog_from_bundled()
-        .as_ref()
-        .and_then(find_codex_model_template))
-}
-
 fn load_codex_model_template_static() -> Option<Value> {
     let text = include_str!("resources/gpt5_5_template.json");
     match serde_json::from_str(text) {
@@ -1062,27 +1043,7 @@ fn fill_template_fields_from_static(template: &mut Value) {
     }
 }
 
-fn load_codex_model_catalog_template_uncached() -> Result<Value, AppError> {
-    // ① models_cache.json (created by Codex when it connects to OpenAI)
-    if let Some(mut template) = load_codex_model_template_from_cache()? {
-        fill_template_fields_from_static(&mut template);
-        return Ok(template);
-    }
-    // ② codex CLI (PATH + platform-specific common paths)
-    if let Some(mut template) = load_codex_model_template_from_bundled()? {
-        fill_template_fields_from_static(&mut template);
-        return Ok(template);
-    }
-    // ③ Static fallback bundled at compile time
-    if let Some(template) = load_codex_model_template_static() {
-        return Ok(template);
-    }
-
-    Err(AppError::Message(format!(
-        "Codex model catalog template `{CODEX_MODEL_CATALOG_TEMPLATE_SLUG}` not found. Please start Codex once so models_cache.json is available, or ensure the `codex` CLI is on PATH."
-    )))
-}
-
+#[cfg(test)]
 fn get_or_load_codex_model_catalog_template<F>(
     cache: &OnceCell<Value>,
     loader: F,
@@ -1091,19 +1052,6 @@ where
     F: FnOnce() -> Result<Value, AppError>,
 {
     cache.get_or_try_init(loader).cloned()
-}
-
-#[cfg(not(test))]
-fn load_codex_model_catalog_template() -> Result<Value, AppError> {
-    get_or_load_codex_model_catalog_template(
-        &CODEX_MODEL_CATALOG_TEMPLATE_CACHE,
-        load_codex_model_catalog_template_uncached,
-    )
-}
-
-#[cfg(test)]
-fn load_codex_model_catalog_template() -> Result<Value, AppError> {
-    load_codex_model_catalog_template_uncached()
 }
 
 fn merge_codex_reasoning_levels(
@@ -1197,7 +1145,7 @@ fn load_codex_model_catalog_defaults() -> Result<(Value, Vec<Value>), AppError> 
     let reasoning_levels =
         load_codex_reasoning_levels(cached_catalog.as_ref(), bundled_catalog.as_ref());
 
-    let template = cached_catalog
+    let mut template = cached_catalog
         .as_ref()
         .and_then(find_codex_model_template)
         .or_else(|| bundled_catalog.as_ref().and_then(find_codex_model_template))
@@ -1207,6 +1155,7 @@ fn load_codex_model_catalog_defaults() -> Result<(Value, Vec<Value>), AppError> 
                 "Codex model catalog template `{CODEX_MODEL_CATALOG_TEMPLATE_SLUG}` not found. Please start Codex once so models_cache.json is available, or ensure the `codex` CLI is on PATH."
             ))
         })?;
+    fill_template_fields_from_static(&mut template);
 
     Ok((template, reasoning_levels))
 }
@@ -3098,6 +3047,9 @@ base_url = "https://production.api/v1"
             supports_parallel_tool_calls: None,
             input_modalities: None,
             base_instructions: None,
+            supported_reasoning_levels: None,
+            default_reasoning_level: None,
+            reasoning_levels: None,
         }];
         let catalog =
             codex_model_catalog_from_specs(&specs, &template, CodexCatalogToolProfile::ProxyChat);
@@ -3301,6 +3253,9 @@ base_url = "https://production.api/v1"
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
                 base_instructions: None,
+                supported_reasoning_levels: None,
+                default_reasoning_level: None,
+                reasoning_levels: None,
             },
             CodexCatalogModelSpec {
                 model: "deepseek/deepseek-v4-pro".to_string(),
@@ -3309,6 +3264,9 @@ base_url = "https://production.api/v1"
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
                 base_instructions: None,
+                supported_reasoning_levels: None,
+                default_reasoning_level: None,
+                reasoning_levels: None,
             },
             CodexCatalogModelSpec {
                 model: "glm-5.2v".to_string(),
@@ -3317,6 +3275,9 @@ base_url = "https://production.api/v1"
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
                 base_instructions: None,
+                supported_reasoning_levels: None,
+                default_reasoning_level: None,
+                reasoning_levels: None,
             },
             CodexCatalogModelSpec {
                 model: "deepseek-v4-flash".to_string(),
@@ -3325,6 +3286,9 @@ base_url = "https://production.api/v1"
                 supports_parallel_tool_calls: None,
                 input_modalities: Some(vec!["text".to_string(), "image".to_string()]),
                 base_instructions: None,
+                supported_reasoning_levels: None,
+                default_reasoning_level: None,
+                reasoning_levels: None,
             },
             CodexCatalogModelSpec {
                 model: "custom-text-alias".to_string(),
@@ -3333,6 +3297,9 @@ base_url = "https://production.api/v1"
                 supports_parallel_tool_calls: None,
                 input_modalities: Some(vec!["text".to_string()]),
                 base_instructions: None,
+                supported_reasoning_levels: None,
+                default_reasoning_level: None,
+                reasoning_levels: None,
             },
         ];
 
